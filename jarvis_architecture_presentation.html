@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="slides-format" content="viewport" />
+  <title>Jarvis Hybrid Local-First Architecture</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <style type="text/tailwindcss">
+    @theme {
+      --color-bg: #18181B;
+      --color-bg-deep: #0F0F12;
+      --color-surface: #27272A;
+      --color-text: #FAFAFA;
+      --color-text-secondary: #D4D4D8;
+      --color-text-muted: #A1A1AA;
+      --color-accent-1: #F97316;
+      --color-accent-2: #14B8A6;
+      --color-accent-3: #FEF3C7;
+      --color-glass-bg: rgba(255,255,255,0.06);
+      --color-glass-border: rgba(255,255,255,0.10);
+      --color-vignette: rgba(0,0,0,0.45);
+      --font-display: 'Archivo Black', sans-serif;
+      --font-body: 'DM Sans', sans-serif;
+    }
+  </style>
+  <style>
+    :root { --color-bg: #18181B; --color-text: #FAFAFA; --glow-color-rgb: 249,115,22; --drag-x: 0px; --drag-y: 0px; }
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { background: var(--color-bg); margin: 0; }
+    body { font-family: var(--font-body); color: var(--color-text); overflow: hidden; height: 100vh; width: 100vw; }
+    .deck { width: 100vw; height: 100vh; position: relative; }
+    .slide { position: absolute; inset: 0; background: var(--color-bg); display: flex; flex-direction: column; align-items: center; justify-content: center; opacity: 0; transform: scale(0.95); transition: opacity 0.7s ease, transform 0.7s ease; pointer-events: none; overflow: hidden; }
+    .slide.active { opacity: 1; transform: scale(1); pointer-events: all; }
+    .slide > .content { position: relative; z-index: 2; width: 100%; max-width: 1200px; padding: clamp(1.4rem, 3vw, 3rem); }
+    .nav-controls { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 16px; z-index: 100; background: var(--color-glass-bg); backdrop-filter: blur(10px); padding: 10px 24px; border-radius: 40px; border: 1px solid var(--color-glass-border); }
+    .nav-btn { width: 40px; height: 40px; border: none; background: var(--color-glass-bg); color: var(--color-accent-1); border-radius: 50%; font-size: 1.2rem; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+    .slide-dots { display: flex; gap: 8px; }
+    .slide-dots .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--color-glass-border); cursor: pointer; transition: background 0.3s, transform 0.3s; }
+    .slide-dots .dot.active { background: var(--color-accent-1); transform: scale(1.25); }
+    .slide-counter { font-size: .82rem; color: var(--color-text-muted); min-width: 44px; text-align: center; }
+    .reveal { opacity: 0; transform: translateY(20px); }
+    .gradient-mesh { position: absolute; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+    .blob { position: absolute; border-radius: 50%; filter: blur(80px); animation: float-slow 14s ease-in-out infinite; }
+    .blob:nth-child(2) { animation: float-drift 16s ease-in-out infinite; }
+    .blob:nth-child(3) { animation: float-slow 20s ease-in-out infinite reverse; }
+    .slide::before { content: ''; position: absolute; inset: 0; z-index: 1; pointer-events: none; background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.7' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E"); background-repeat: repeat; background-size: 256px 256px; opacity: .03; mix-blend-mode: overlay; }
+    .slide::after { content: ''; position: absolute; inset: 0; z-index: 1; pointer-events: none; background: radial-gradient(ellipse at center, transparent 52%, var(--color-vignette) 100%); }
+    .text-glow { text-shadow: 0 0 20px rgba(var(--glow-color-rgb),0.45), 0 0 40px rgba(var(--glow-color-rgb),0.15); }
+    .stat-glow { text-shadow: 0 0 30px rgba(var(--glow-color-rgb),0.55), 0 0 60px rgba(var(--glow-color-rgb),0.18); }
+    .mouse-spotlight { position: fixed; inset: 0; z-index: 99; pointer-events: none; }
+    .arch-board { position: relative; width: 100%; min-height: 62vh; border-radius: 28px; border: 1px solid rgba(255,255,255,.1); background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.025)); backdrop-filter: blur(16px); overflow: hidden; }
+    .arch-grid { position: absolute; inset: 0; background-image: linear-gradient(rgba(255,255,255,.05) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.05) 1px, transparent 1px); background-size: 28px 28px; opacity: .35; }
+    .arch-svg { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1; }
+    .arch-node { position: absolute; z-index: 2; min-width: 170px; max-width: 210px; padding: 14px 16px; border-radius: 18px; background: rgba(24,24,27,.78); border: 1px solid rgba(255,255,255,.12); box-shadow: 0 14px 28px rgba(0,0,0,.25); cursor: grab; user-select: none; transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease; }
+    .arch-node:hover { transform: translateY(-2px); border-color: rgba(249,115,22,.55); box-shadow: 0 18px 38px rgba(0,0,0,.34); }
+    .arch-node.dragging { cursor: grabbing; transform: scale(1.03); border-color: rgba(20,184,166,.8); box-shadow: 0 20px 42px rgba(0,0,0,.42); }
+    .arch-node h4 { margin: 0 0 6px; font-size: .95rem; line-height: 1.15; }
+    .arch-node p { margin: 0; font-size: .74rem; line-height: 1.3; color: var(--color-text-muted); }
+    .badge { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 4px 10px; font-size: .68rem; letter-spacing: .08em; text-transform: uppercase; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.08); color: var(--color-text-secondary); margin-bottom: 8px; }
+    .mini-card { background: var(--color-glass-bg); border: 1px solid var(--color-glass-border); border-radius: 20px; padding: 18px; backdrop-filter: blur(14px); }
+    .pill { border-radius: 999px; padding: 6px 12px; display: inline-flex; background: rgba(249,115,22,.14); border: 1px solid rgba(249,115,22,.25); color: #fed7aa; font-size: .74rem; }
+    @keyframes float-slow { 0% { transform: translate(0,0) scale(1);} 25% { transform: translate(60px,-40px) scale(1.1);} 50% { transform: translate(-30px,35px) scale(.92);} 75% { transform: translate(40px,20px) scale(1.05);} 100% { transform: translate(0,0) scale(1);} }
+    @keyframes float-drift { 0% { transform: translate(0,0) scale(1) rotate(0deg);} 33% { transform: translate(-55px,-50px) scale(1.12) rotate(3deg);} 66% { transform: translate(35px,25px) scale(.9) rotate(-2deg);} 100% { transform: translate(0,0) scale(1) rotate(0deg);} }
+    @keyframes float { 0%,100% { transform: translateY(0);} 50% { transform: translateY(-14px);} }
+    @media (max-width: 1100px) { .arch-node { min-width: 145px; max-width: 170px; padding: 12px 12px; } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.2s !important; } }
+  </style>
+</head>
+<body>
+<div class="mouse-spotlight"></div>
+<div class="deck">
+  <div class="slide slide-1 active" data-slide="1">
+    <div class="gradient-mesh">
+      <div class="blob" style="width: 520px; height: 520px; top: -100px; right: -120px; background: var(--color-accent-1); opacity: .16;"></div>
+      <div class="blob" style="width: 340px; height: 340px; bottom: -90px; left: -50px; background: var(--color-accent-2); opacity: .12;"></div>
+      <div class="blob" style="width: 230px; height: 230px; top: 38%; left: 18%; background: var(--color-accent-3); opacity: .09;"></div>
+    </div>
+    <canvas class="particle-canvas" style="position:absolute; inset:0; z-index:1;"></canvas>
+    <div class="content text-center">
+      <div class="text-[110px] mb-4 animate-[float_3s_ease-in-out_infinite]">🤖</div>
+      <h1 class="font-display text-[clamp(2.7rem,6vw,5.1rem)] tracking-tight mb-4 bg-linear-to-br from-accent-1 via-accent-3 to-accent-2 bg-clip-text text-transparent reveal">Jarvis Project Architecture</h1>
+      <p class="text-[clamp(.95rem,1.5vw,1.25rem)] uppercase tracking-[6px] text-text-muted reveal">Hybrid local-first AI assistant with orchestration, coding agent and cloud fallback</p>
+      <div class="mt-10 grid grid-cols-3 gap-6 reveal">
+        <div class="mini-card hover:-translate-y-1 hover:shadow-xl transition"><div class="text-3xl stat-glow font-display text-accent-1">6</div><div class="text-sm text-text-secondary mt-2">Architecture layers</div></div>
+        <div class="mini-card hover:-translate-y-1 hover:shadow-xl transition"><div class="text-3xl stat-glow font-display text-accent-2">3</div><div class="text-sm text-text-secondary mt-2">Task paths: general, coding, complex</div></div>
+        <div class="mini-card hover:-translate-y-1 hover:shadow-xl transition"><div class="text-3xl stat-glow font-display text-accent-3">1</div><div class="text-sm text-text-secondary mt-2">Central orchestration graph</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="slide slide-2" data-slide="2">
+    <div class="gradient-mesh"><div class="blob" style="width:320px;height:320px;top:-70px;right:-70px;background:var(--color-accent-1);opacity:.08"></div><div class="blob" style="width:220px;height:220px;bottom:-50px;left:-40px;background:var(--color-accent-2);opacity:.07"></div></div>
+    <div class="content">
+      <div class="badge reveal">System view</div>
+      <h2 class="font-display text-[clamp(2rem,4vw,3rem)] mb-4 reveal">Architecture stack</h2>
+      <div class="grid grid-cols-2 gap-6 mt-8">
+        <div class="mini-card reveal hover:-translate-y-1 hover:shadow-xl transition"><h3 class="text-xl font-bold mb-3 text-accent-1">1. Interface layer</h3><p class="text-text-secondary leading-relaxed">Streamlit chat UI, file upload, mode indicators, session history, and later voice input and text-to-speech output. This is where the user sees routing, approvals, and tool activity.</p></div>
+        <div class="mini-card reveal hover:-translate-y-1 hover:shadow-xl transition"><h3 class="text-xl font-bold mb-3 text-accent-2">2. Gateway layer</h3><p class="text-text-secondary leading-relaxed">FastAPI receives requests, validates schemas, applies input guardrails, starts traces, and streams clean responses back to the frontend.</p></div>
+        <div class="mini-card reveal hover:-translate-y-1 hover:shadow-xl transition"><h3 class="text-xl font-bold mb-3 text-accent-3">3. Orchestration layer</h3><p class="text-text-secondary leading-relaxed">LangGraph manages state, routing, handoffs, retry logic, approvals, and the ordered execution of tools, memory, and model calls.</p></div>
+        <div class="mini-card reveal hover:-translate-y-1 hover:shadow-xl transition"><h3 class="text-xl font-bold mb-3 text-accent-1">4. Execution layers</h3><p class="text-text-secondary leading-relaxed">Model portfolio, memory and retrieval, tools, coding-agent subsystem, and safety policy all sit below orchestration as specialized execution domains.</p></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="slide slide-3" data-slide="3">
+    <div class="gradient-mesh"><div class="blob" style="width:360px;height:360px;top:-80px;right:-90px;background:var(--color-accent-2);opacity:.08"></div><div class="blob" style="width:260px;height:260px;bottom:-60px;left:-60px;background:var(--color-accent-1);opacity:.07"></div></div>
+    <canvas class="particle-canvas-ambient" style="position:absolute; inset:0; z-index:1;"></canvas>
+    <div class="content">
+      <div class="badge reveal">Core idea</div>
+      <h2 class="font-display text-[clamp(2rem,4vw,3rem)] mb-4 reveal">Why orchestration is mandatory</h2>
+      <div class="grid grid-cols-3 gap-6 mt-8">
+        <div class="mini-card reveal hover:-translate-y-1 hover:shadow-xl transition"><h3 class="text-lg font-bold mb-2">State control</h3><p class="text-text-secondary">The orchestrator stores session state, retrieved context, selected path, active tools, approval flags, and final response.</p></div>
+        <div class="mini-card reveal hover:-translate-y-1 hover:shadow-xl transition"><h3 class="text-lg font-bold mb-2">Workflow control</h3><p class="text-text-secondary">It decides whether the request should go through a deterministic workflow, a coding workflow, or a complex cloud branch.</p></div>
+        <div class="mini-card reveal hover:-translate-y-1 hover:shadow-xl transition"><h3 class="text-lg font-bold mb-2">Recovery control</h3><p class="text-text-secondary">It handles retries, provider failover, branch handoff, and fallback to local models when cloud routes are unavailable.</p></div>
+      </div>
+      <div class="mt-8 mini-card reveal"><div class="pill mb-3">Best pattern</div><p class="text-lg text-text-secondary leading-relaxed">Use a <span class="text-accent-1 font-bold">deterministic outer graph</span> with agentic behavior only inside controlled nodes. That keeps the system reliable while still allowing flexible tool use and coding workflows.</p></div>
+    </div>
+  </div>
+
+  <div class="slide slide-4" data-slide="4">
+    <div class="gradient-mesh"><div class="blob" style="width:350px;height:350px;top:-90px;right:-80px;background:var(--color-accent-1);opacity:.08"></div><div class="blob" style="width:220px;height:220px;bottom:-50px;left:-40px;background:var(--color-accent-3);opacity:.06"></div></div>
+    <div class="content">
+      <div class="badge reveal">Execution graph</div>
+      <h2 class="font-display text-[clamp(2rem,4vw,3rem)] mb-4 reveal">How we orchestrate</h2>
+      <div class="grid grid-cols-2 gap-6 mt-8">
+        <div class="mini-card reveal hover:-translate-y-1 hover:shadow-xl transition">
+          <h3 class="text-xl font-bold mb-3 text-accent-1">LangGraph node flow</h3>
+          <ul class="space-y-3 text-text-secondary leading-relaxed">
+            <li>1. Validate input and session metadata.</li>
+            <li>2. Classify intent: general, coding, or complex.</li>
+            <li>3. Build context from memory and retrieval.</li>
+            <li>4. Select model path and tool permissions.</li>
+            <li>5. Execute branch-specific tools and model calls.</li>
+            <li>6. Check risk, approval, output validation, and fallback.</li>
+          </ul>
+        </div>
+        <div class="mini-card reveal hover:-translate-y-1 hover:shadow-xl transition">
+          <h3 class="text-xl font-bold mb-3 text-accent-2">Orchestration state schema</h3>
+          <ul class="space-y-3 text-text-secondary leading-relaxed">
+            <li><span class="text-accent-3">user_input</span>, session_id, history</li>
+            <li><span class="text-accent-3">intent</span>, selected_path, selected_model</li>
+            <li><span class="text-accent-3">retrieved_context</span>, tool_calls, tool_results</li>
+            <li><span class="text-accent-3">risk_level</span>, approval_required</li>
+            <li><span class="text-accent-3">fallback_count</span>, error_state, final_response</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="slide slide-5" data-slide="5">
+    <div class="gradient-mesh"><div class="blob" style="width:420px;height:420px;top:-100px;right:-80px;background:var(--color-accent-2);opacity:.08"></div><div class="blob" style="width:240px;height:240px;bottom:-60px;left:-40px;background:var(--color-accent-1);opacity:.06"></div></div>
+    <div class="content">
+      <div class="badge reveal">Interactive architecture</div>
+      <h2 class="font-display text-[clamp(2rem,4vw,3rem)] mb-3 reveal">Draggable architecture board</h2>
+      <p class="text-text-secondary text-lg max-w-4xl reveal">Drag the blocks to explain the design live. The arrows automatically reconnect, so you can move components during your explanation without losing the architecture flow.</p>
+      <div class="arch-board mt-6 reveal" id="archBoard">
+        <div class="arch-grid"></div>
+        <svg class="arch-svg" id="archSvg"></svg>
+        <div class="arch-node" data-id="user" style="left:40px;top:220px;"><div class="badge">Actor</div><h4>User</h4><p>Chat, voice, files and approvals enter here.</p></div>
+        <div class="arch-node" data-id="ui" style="left:190px;top:220px;"><div class="badge">Layer 1</div><h4>Interface</h4><p>Streamlit UI, file upload, voice controls.</p></div>
+        <div class="arch-node" data-id="api" style="left:360px;top:100px;"><div class="badge">Layer 2</div><h4>Gateway</h4><p>FastAPI, schema validation, streaming, tracing.</p></div>
+        <div class="arch-node" data-id="guard" style="left:360px;top:330px;"><div class="badge">Safety</div><h4>Guardrails</h4><p>Input checks, output checks, PII redaction.</p></div>
+        <div class="arch-node" data-id="orch" style="left:560px;top:215px;"><div class="badge">Layer 3</div><h4>Orchestrator</h4><p>LangGraph state machine controlling the full workflow.</p></div>
+        <div class="arch-node" data-id="memory" style="left:780px;top:70px;"><div class="badge">Execution</div><h4>Memory + RAG</h4><p>Short-term memory, long-term memory, embeddings, vector DB.</p></div>
+        <div class="arch-node" data-id="general" style="left:780px;top:210px;"><div class="badge">Branch</div><h4>General path</h4><p>Local model for chat, planning, retrieval, assistant tasks.</p></div>
+        <div class="arch-node" data-id="coding" style="left:780px;top:355px;"><div class="badge">Branch</div><h4>Coding path</h4><p>Repo scanner, file tools, tests, terminal, patching.</p></div>
+        <div class="arch-node" data-id="complex" style="left:995px;top:210px;"><div class="badge">Branch</div><h4>Complex path</h4><p>OpenRouter chain for hard reasoning and cloud escalation.</p></div>
+        <div class="arch-node" data-id="approval" style="left:995px;top:70px;"><div class="badge">Safety</div><h4>Approval gate</h4><p>User confirmation for risky actions and destructive writes.</p></div>
+        <div class="arch-node" data-id="fallback" style="left:995px;top:355px;"><div class="badge">Recovery</div><h4>Fallback handler</h4><p>Retry, failover, and route back to local when needed.</p></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="slide slide-6" data-slide="6">
+    <div class="gradient-mesh"><div class="blob" style="width:350px;height:350px;top:-90px;right:-90px;background:var(--color-accent-3);opacity:.08"></div><div class="blob" style="width:230px;height:230px;bottom:-50px;left:-50px;background:var(--color-accent-2);opacity:.06"></div></div>
+    <div class="content">
+      <div class="badge reveal">Path routing</div>
+      <h2 class="font-display text-[clamp(2rem,4vw,3rem)] mb-4 reveal">Three execution branches</h2>
+      <div class="grid grid-cols-3 gap-6 mt-8">
+        <div class="mini-card reveal hover:-translate-y-1 hover:shadow-xl transition"><h3 class="text-xl font-bold mb-3 text-accent-1">General</h3><p class="text-text-secondary leading-relaxed">For normal chat, planning, summaries, retrieval and personal assistant flows. Default local path for low cost and privacy.</p></div>
+        <div class="mini-card reveal hover:-translate-y-1 hover:shadow-xl transition"><h3 class="text-xl font-bold mb-3 text-accent-2">Coding</h3><p class="text-text-secondary leading-relaxed">For repo-aware engineering tasks such as reading files, patching code, searching symbols, running tests and controlled shell commands.</p></div>
+        <div class="mini-card reveal hover:-translate-y-1 hover:shadow-xl transition"><h3 class="text-xl font-bold mb-3 text-accent-3">Complex</h3><p class="text-text-secondary leading-relaxed">For long reasoning, advanced architecture decisions or hard coding problems that exceed local capability and must escalate to OpenRouter.</p></div>
+      </div>
+      <div class="mt-8 mini-card reveal"><p class="text-lg text-text-secondary leading-relaxed">Routing should be <span class="text-accent-1 font-bold">rule-first</span> with optional small-model classification for ambiguous requests. That keeps latency predictable and makes debugging much easier.</p></div>
+    </div>
+  </div>
+
+  <div class="slide slide-7" data-slide="7">
+    <div class="gradient-mesh"><div class="blob" style="width:340px;height:340px;top:-80px;right:-80px;background:var(--color-accent-1);opacity:.08"></div><div class="blob" style="width:250px;height:250px;bottom:-70px;left:-60px;background:var(--color-accent-2);opacity:.06"></div></div>
+    <canvas class="particle-canvas" style="position:absolute; inset:0; z-index:1;"></canvas>
+    <div class="content">
+      <div class="badge reveal">Safety</div>
+      <h2 class="font-display text-[clamp(2rem,4vw,3rem)] mb-4 reveal">Protection and approval flow</h2>
+      <div class="grid grid-cols-2 gap-6 mt-8">
+        <div class="mini-card reveal hover:-translate-y-1 hover:shadow-xl transition"><h3 class="text-xl font-bold mb-3 text-accent-1">Before execution</h3><p class="text-text-secondary leading-relaxed">Validate input, detect prompt injection, classify task risk, and decide whether the task can be auto-run or must stop for approval.</p></div>
+        <div class="mini-card reveal hover:-translate-y-1 hover:shadow-xl transition"><h3 class="text-xl font-bold mb-3 text-accent-2">After execution</h3><p class="text-text-secondary leading-relaxed">Validate output, remove sensitive data, record traces, and send either a clean response or a structured warning with recovery options.</p></div>
+      </div>
+      <div class="grid grid-cols-3 gap-6 mt-8">
+        <div class="mini-card reveal hover:-translate-y-1 hover:shadow-xl transition"><div class="text-2xl font-display text-accent-3 mb-2">01</div><p class="text-text-secondary">Check if the action is read-only, write, execute, or external.</p></div>
+        <div class="mini-card reveal hover:-translate-y-1 hover:shadow-xl transition"><div class="text-2xl font-display text-accent-3 mb-2">02</div><p class="text-text-secondary">Pause the graph if approval is required.</p></div>
+        <div class="mini-card reveal hover:-translate-y-1 hover:shadow-xl transition"><div class="text-2xl font-display text-accent-3 mb-2">03</div><p class="text-text-secondary">Resume the exact node path after approval without losing state.</p></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="slide slide-8" data-slide="8">
+    <div class="gradient-mesh">
+      <div class="blob" style="width:500px;height:500px;top:-110px;right:-110px;background:var(--color-accent-1);opacity:.15"></div>
+      <div class="blob" style="width:320px;height:320px;bottom:-90px;left:-50px;background:var(--color-accent-2);opacity:.11"></div>
+      <div class="blob" style="width:220px;height:220px;top:40%;left:20%;background:var(--color-accent-3);opacity:.09"></div>
+    </div>
+    <canvas class="particle-canvas" style="position:absolute; inset:0; z-index:1;"></canvas>
+    <div class="content text-center">
+      <div class="text-[104px] mb-4 animate-[float_3s_ease-in-out_infinite]">🧠</div>
+      <h2 class="font-display text-[clamp(2.5rem,5vw,4.4rem)] mb-4 bg-linear-to-br from-accent-1 via-accent-3 to-accent-2 bg-clip-text text-transparent reveal">Final architecture direction</h2>
+      <p class="text-[clamp(1rem,1.7vw,1.35rem)] text-text-secondary max-w-4xl mx-auto reveal">Build a local-first Jarvis with <span class="text-accent-1 font-bold">LangGraph orchestration</span>, specialized local execution branches, strong safety gates, and OpenRouter only for truly complex escalation. That gives you the best balance of reliability, privacy, cost control and explainability.</p>
+      <div class="mt-10 grid grid-cols-4 gap-5 reveal">
+        <div class="mini-card hover:-translate-y-1 hover:shadow-xl transition"><div class="text-2xl font-display text-accent-1">FastAPI</div><div class="text-sm text-text-muted mt-2">Gateway</div></div>
+        <div class="mini-card hover:-translate-y-1 hover:shadow-xl transition"><div class="text-2xl font-display text-accent-2">LangGraph</div><div class="text-sm text-text-muted mt-2">Orchestrator</div></div>
+        <div class="mini-card hover:-translate-y-1 hover:shadow-xl transition"><div class="text-2xl font-display text-accent-3">Ollama</div><div class="text-sm text-text-muted mt-2">Local models</div></div>
+        <div class="mini-card hover:-translate-y-1 hover:shadow-xl transition"><div class="text-2xl font-display text-accent-1">OpenRouter</div><div class="text-sm text-text-muted mt-2">Complex fallback</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="nav-controls">
+  <button class="nav-btn" onclick="changeSlide(-1)" aria-label="Previous slide">&#8249;</button>
+  <div class="slide-dots" id="dots"></div>
+  <button class="nav-btn" onclick="changeSlide(1)" aria-label="Next slide">&#8250;</button>
+  <span class="slide-counter" id="counter">1 / 8</span>
+</div>
+<script>
+let current = 1;
+const total = document.querySelectorAll('.slide').length;
+const dotsContainer = document.getElementById('dots');
+const counter = document.getElementById('counter');
+for (let i = 1; i <= total; i++) { const dot = document.createElement('div'); dot.className = 'dot' + (i === 1 ? ' active' : ''); dot.onclick = () => goToSlide(i); dotsContainer.appendChild(dot); }
+function goToSlide(n) {
+  const prev = document.querySelector('.slide.active');
+  const next = document.querySelector(`.slide[data-slide="${n}"]`);
+  if (prev) prev.classList.remove('active');
+  if (next) { next.classList.add('active'); animateSlide(next); }
+  current = n; updateNav();
+}
+function changeSlide(dir) { let next = current + dir; if (next < 1) next = total; if (next > total) next = 1; goToSlide(next); }
+function updateNav() { document.querySelectorAll('.dot').forEach((d, i) => d.classList.toggle('active', i + 1 === current)); counter.textContent = current + ' / ' + total; }
+document.addEventListener('keydown', (e) => { if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); changeSlide(1); } if (e.key === 'ArrowLeft') { e.preventDefault(); changeSlide(-1); } });
+let touchStartX = 0;
+document.addEventListener('touchstart', (e) => { touchStartX = e.touches[0].clientX; });
+document.addEventListener('touchend', (e) => { const diff = touchStartX - e.changedTouches[0].clientX; if (Math.abs(diff) > 50) changeSlide(diff > 0 ? 1 : -1); });
+function animateSlide(slide) {
+  slide.querySelectorAll('.reveal').forEach((el, i) => {
+    el.style.transition = 'none'; el.style.opacity = '0'; el.style.transform = 'translateY(20px)'; el.offsetHeight;
+    const delay = i * 0.08; el.style.transition = `opacity 0.35s ease ${delay}s, transform 0.35s ease ${delay}s`; el.style.opacity = '1'; el.style.transform = 'translateY(0px)';
+  });
+}
+document.addEventListener('mousemove', (e) => {
+  const spotlight = document.querySelector('.mouse-spotlight');
+  if (spotlight) spotlight.style.background = `radial-gradient(560px circle at ${e.clientX}px ${e.clientY}px, rgba(249,115,22,0.07), transparent 40%)`;
+});
+window.initParticles = function(canvas, options) {
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  canvas.width = canvas.offsetWidth; canvas.height = canvas.offsetHeight;
+  const interactive = options.interactive !== false; const count = options.count || (interactive ? 55 : 18);
+  let mx = -1000, my = -1000; const particles = Array.from({ length: count }, () => ({ x: Math.random()*canvas.width, y: Math.random()*canvas.height, vx:(Math.random()-0.5)*0.3, vy:(Math.random()-0.5)*0.3, size:Math.random()*2.4+0.8, alpha:Math.random()*0.35+0.1 }));
+  if (interactive) {
+    canvas.addEventListener('mousemove', (e) => { const rect = canvas.getBoundingClientRect(); mx = e.clientX - rect.left; my = e.clientY - rect.top; });
+    canvas.addEventListener('mouseleave', () => { mx = -1000; my = -1000; });
+  }
+  (function animate() {
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    particles.forEach(p => {
+      if (interactive) { const dx = p.x - mx, dy = p.y - my, dist = Math.sqrt(dx*dx + dy*dy) || 1; if (dist < 120) { const force = (120 - dist)/120 * 2; p.vx += (dx/dist)*force*0.1; p.vy += (dy/dist)*force*0.1; } }
+      p.vx *= 0.98; p.vy *= 0.98; p.x += p.vx; p.y += p.vy;
+      if (p.x < 0) p.x = canvas.width; if (p.x > canvas.width) p.x = 0; if (p.y < 0) p.y = canvas.height; if (p.y > canvas.height) p.y = 0;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fillStyle = `rgba(249,115,22,${p.alpha})`; ctx.fill();
+    }); requestAnimationFrame(animate);
+  })();
+};
+document.querySelectorAll('.particle-canvas').forEach(c => window.initParticles(c, { interactive: true, count: 55 }));
+document.querySelectorAll('.particle-canvas-ambient').forEach(c => window.initParticles(c, { interactive: false, count: 18 }));
+try { animateSlide(document.querySelector('.slide.active')); } catch(e) {}
+
+const connections = [
+  ['user','ui'], ['ui','api'], ['ui','guard'], ['api','orch'], ['guard','orch'], ['orch','memory'], ['orch','general'], ['orch','coding'], ['orch','complex'], ['orch','approval'], ['orch','fallback'], ['complex','fallback'], ['coding','approval'], ['general','fallback']
+];
+const board = document.getElementById('archBoard');
+const svg = document.getElementById('archSvg');
+const nodes = [...board.querySelectorAll('.arch-node')];
+function centerOf(el) {
+  const br = board.getBoundingClientRect();
+  const r = el.getBoundingClientRect();
+  return { x: r.left - br.left + r.width/2, y: r.top - br.top + r.height/2 };
+}
+function drawConnections() {
+  if (!svg) return;
+  const boardRect = board.getBoundingClientRect();
+  svg.setAttribute('viewBox', `0 0 ${boardRect.width} ${boardRect.height}`);
+  svg.innerHTML = '';
+  connections.forEach(([a,b]) => {
+    const na = board.querySelector(`[data-id="${a}"]`); const nb = board.querySelector(`[data-id="${b}"]`); if (!na || !nb) return;
+    const p1 = centerOf(na), p2 = centerOf(nb);
+    const dx = Math.max(40, Math.abs(p2.x - p1.x) * 0.35);
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', `M ${p1.x} ${p1.y} C ${p1.x + dx} ${p1.y}, ${p2.x - dx} ${p2.y}, ${p2.x} ${p2.y}`);
+    path.setAttribute('fill', 'none'); path.setAttribute('stroke', 'rgba(255,255,255,0.28)'); path.setAttribute('stroke-width', '2.2');
+    svg.appendChild(path);
+    const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    dot.setAttribute('cx', p2.x); dot.setAttribute('cy', p2.y); dot.setAttribute('r', '4'); dot.setAttribute('fill', 'rgba(249,115,22,0.9)');
+    svg.appendChild(dot);
+  });
+}
+function makeDraggable(el) {
+  let active = false, startX = 0, startY = 0, originX = 0, originY = 0;
+  const start = (clientX, clientY) => {
+    active = true; el.classList.add('dragging'); startX = clientX; startY = clientY; originX = parseFloat(el.style.left); originY = parseFloat(el.style.top);
+  };
+  const move = (clientX, clientY) => {
+    if (!active) return;
+    const dx = clientX - startX; const dy = clientY - startY;
+    const maxX = board.clientWidth - el.offsetWidth; const maxY = board.clientHeight - el.offsetHeight;
+    let nextX = Math.min(maxX, Math.max(0, originX + dx)); let nextY = Math.min(maxY, Math.max(0, originY + dy));
+    el.style.left = `${nextX}px`; el.style.top = `${nextY}px`; drawConnections();
+  };
+  const end = () => { active = false; el.classList.remove('dragging'); };
+  el.addEventListener('mousedown', (e) => { e.preventDefault(); start(e.clientX, e.clientY); });
+  window.addEventListener('mousemove', (e) => move(e.clientX, e.clientY));
+  window.addEventListener('mouseup', end);
+  el.addEventListener('touchstart', (e) => { const t = e.touches[0]; start(t.clientX, t.clientY); }, { passive: true });
+  window.addEventListener('touchmove', (e) => { if (!active) return; const t = e.touches[0]; move(t.clientX, t.clientY); }, { passive: true });
+  window.addEventListener('touchend', end);
+}
+nodes.forEach(makeDraggable);
+window.addEventListener('resize', drawConnections);
+setTimeout(drawConnections, 120);
+</script>
+</body>
+</html>
