@@ -21,12 +21,18 @@ if user_input:
     with st.chat_message("user"):
         st.markdown(user_input)
 
+    history = [{"role": m["role"], "content": m["content"]} for m in st.session_state.messages[:-1]]
+
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
             try:
                 resp = httpx.post(
                     API_URL,
-                    json={"session_id": "default", "message": user_input},
+                    json={
+                        "session_id": "default",
+                        "message": user_input,
+                        "history": history,
+                    },
                     timeout=120,
                 )
                 resp.raise_for_status()

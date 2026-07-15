@@ -1,8 +1,12 @@
-"""Builds context for the model call from memory and retrieval (stub)."""
+"""Builds context for the model call from memory and retrieval."""
+from jarvis.memory.retrieve import has_documents, query_context
 from jarvis.orchestration.state import JarvisState
 
 
 def build_context(state: JarvisState) -> JarvisState:
-    # TODO: pull from vector DB / long-term memory once memory layer is wired up.
-    state["retrieved_context"] = ""
+    if has_documents():
+        context = query_context(state["user_input"], k=4)
+        state["retrieved_context"] = context
+    else:
+        state["retrieved_context"] = ""
     return state
