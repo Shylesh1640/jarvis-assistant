@@ -1,4 +1,6 @@
 """Execution nodes for each routing branch."""
+import logging
+
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from jarvis.models.ollama_client import get_coding_model, get_general_model
@@ -7,6 +9,8 @@ from jarvis.orchestration.state import JarvisState
 from jarvis.tools.coding.file_ops import read_file
 from jarvis.tools.general.calculator import calculator
 from jarvis.tools.general.rag_search import rag_search
+
+logger = logging.getLogger(__name__)
 
 _GENERAL_TOOLS = [calculator, rag_search]
 
@@ -63,7 +67,11 @@ def _build_initial_messages(state: JarvisState) -> list:
 
 def run_general_branch(state: JarvisState) -> JarvisState:
     if not state.get("messages"):
+        logger.info("Building initial messages for general branch")
         state["messages"] = _build_initial_messages(state)
+    elif state.get("approved"):
+        logger.info("Skipping LLM call — approval resume, tools pending")
+        return state
 
     llm = get_general_model().bind_tools(_GENERAL_TOOLS)
     response = llm.invoke(state["messages"])
@@ -73,6 +81,11 @@ def run_general_branch(state: JarvisState) -> JarvisState:
 
     if not response.tool_calls:
         state["final_response"] = response.content
+        logger.info("General branch final response (no tool calls)")
+    else:
+        logger.info("General branch LLM requested %d tool call(s)", len(response.tool_calls))
+        tool_names = [tc.get("name", "?") for tc in response.tool_calls]
+        logger.info("Tool calls: %s", tool_names)
     return state
 
 
@@ -81,6 +94,7 @@ def run_general_branch(state: JarvisState) -> JarvisState:
 # ---------------------------------------------------------------------------
 
 def run_coding_branch(state: JarvisState) -> JarvisState:
+    logger.info("Coding branch selected")
     history = _format_history(state.get("history", []))
     prompt = state["user_input"]
     if history:
@@ -90,6 +104,7 @@ def run_coding_branch(state: JarvisState) -> JarvisState:
     response = llm.invoke(prompt)
     state["selected_path"] = "coding"
     state["final_response"] = response.content
+    logger.info("Coding branch complete")
     return state
 
 
@@ -98,6 +113,7 @@ def run_coding_branch(state: JarvisState) -> JarvisState:
 # ---------------------------------------------------------------------------
 
 def run_complex_branch(state: JarvisState) -> JarvisState:
+    logger.info("Complex branch selected")
     history = _format_history(state.get("history", []))
     messages = [{"role": "user", "content": state["user_input"]}]
     if history:
@@ -114,8 +130,10 @@ def run_complex_branch(state: JarvisState) -> JarvisState:
         state["selected_path"] = "complex"
         state["selected_model"] = model_used
         state["final_response"] = text
+        logger.info("Complex branch completed with model: %s", model_used)
     except Exception:  # noqa: BLE001
         state["fallback_count"] = state.get("fallback_count", 0) + 1
+        logger.warning("Complex branch failed, falling back to general")
         return run_general_branch(state)
 
     return state

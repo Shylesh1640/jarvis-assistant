@@ -1,5 +1,9 @@
 """Rule-first intent classification node."""
+import logging
+
 from jarvis.orchestration.state import JarvisState
+
+logger = logging.getLogger(__name__)
 
 CODING_KEYWORDS = [
     "code", "bug", "error", "function", "class", "repo", "git",
@@ -22,4 +26,5 @@ def classify_intent(state: JarvisState) -> JarvisState:
     else:
         state["intent"] = "general"
 
+    logger.info("Intent classified: %s", state["intent"])
     return state

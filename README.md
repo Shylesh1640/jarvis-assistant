@@ -1,12 +1,11 @@
-# Jarvis Assistant — Starter Project
+# Jarvis Assistant
 
-Local-first hybrid AI assistant scaffold: FastAPI backend, LangGraph orchestration,
+Local-first hybrid AI assistant: FastAPI backend, LangGraph orchestration,
 Ollama for local models, OpenRouter for complex-task fallback, and a Streamlit UI.
 
 ## Setup
 
 ```bash
-uv init --no-workspace   # skip if pyproject.toml already exists
 uv sync
 ```
 
@@ -37,15 +36,20 @@ src/jarvis/
 ├── api/            # FastAPI app, routes, schemas
 ├── orchestration/  # LangGraph state, router, branches, graph
 ├── models/         # Ollama + OpenRouter clients
-├── tools/          # general/ and coding/ tool implementations (to be filled in)
-├── memory/         # short-term/long-term memory + vector store (to be filled in)
-├── guardrails/      # input/output validation, risk classification
+├── tools/          # general/ (calculator, RAG search) and coding/ (file read) tools
+├── memory/         # ChromaDB vector store, ingestion, retrieval
+├── guardrails/     # input validation, output redaction, risk classification
 └── config/         # settings loaded from .env
 ```
 
 ## Current status
 
-This is Phase 1–3 of the task list: foundation, backend skeleton, and a working
-routing graph with three branches (general / coding / complex) and a basic
-fallback from complex → general when cloud models fail. Tools, memory/RAG,
-and approval gates are stubbed and ready to be filled in next.
+✅ **Phase 1–2 (foundation + backend skeleton)** — Complete  
+✅ **Phase 3 (orchestration graph)** — Three branches (general / coding / complex)
+with conditional routing, tool calling loops, and fallback from complex → general  
+✅ **Tools** — Calculator, RAG search, file reader (all implemented as LangChain tools)  
+✅ **Memory/RAG** — ChromaDB vector store with text ingestion and similarity search  
+✅ **Guardrails** — Input validation, PII output redaction, tool risk classification  
+⏳ **Approval gates** — Nodes implemented but not yet wired into the graph  
+⏳ **Write/exec tools** — Only `read_file` exists; write, edit, and shell tools pending  
+⏳ **Document ingestion** — Store API exists but no upload endpoint or CLI

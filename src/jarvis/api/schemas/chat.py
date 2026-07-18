@@ -4,8 +4,9 @@ from pydantic import BaseModel
 
 class ChatRequest(BaseModel):
     session_id: str = "default"
-    message: str
+    message: str = ""
     history: list[dict[str, str]] = []
+    approved: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -13,3 +14,5 @@ class ChatResponse(BaseModel):
     response: str
     path_used: str
     model_used: str | None = None
+    approval_required: bool = False
+    pending_action: str | None = None

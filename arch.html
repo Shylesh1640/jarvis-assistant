@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Jarvis Assistant - Architecture & System Design</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; padding: 0; background: #020617; color: #e5e7eb; }
+    header { padding: 2rem 1.5rem; background: radial-gradient(circle at top left, #0f172a, #020617); border-bottom: 1px solid #1f2937; }
+    h1 { margin: 0; font-size: 2.2rem; color: #f97316; }
+    h2 { color: #fbbf24; margin-top: 2rem; }
+    p { line-height: 1.6; }
+    main { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
+    .tagline { color: #9ca3af; margin-top: 0.5rem; }
+    .section { margin-top: 2rem; padding: 1.5rem; border-radius: 0.75rem; background: rgba(15,23,42,0.9); border: 1px solid #1f2937; }
+    .pill { display: inline-block; padding: 0.15rem 0.6rem; border-radius: 999px; background: rgba(249,115,22,0.15); color: #fed7aa; font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin-top: 1rem; }
+    .card { padding: 1rem; border-radius: 0.75rem; background: #020617; border: 1px solid #1f2937; }
+    .card h3 { margin-top: 0; color: #f97316; }
+    code { background: #020617; padding: 0.1rem 0.3rem; border-radius: 0.25rem; font-size: 0.9em; }
+    pre { background: #020617; padding: 0.75rem; border-radius: 0.5rem; overflow-x: auto; border: 1px solid #1f2937; }
+    .diagram { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size: 0.85rem; white-space: pre; background: #020617; border-radius: 0.5rem; padding: 0.75rem; border: 1px solid #1f2937; overflow-x: auto; }
+    .badge-row { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
+    .badge { padding: 0.15rem 0.55rem; border-radius: 999px; border: 1px solid #1f2937; font-size: 0.75rem; color: #e5e7eb; background: #020617; }
+    .workflow-step { margin-bottom: 0.75rem; }
+    .workflow-step span { display: inline-block; width: 1.5rem; height: 1.5rem; border-radius: 999px; border: 1px solid #f97316; text-align: center; line-height: 1.4rem; margin-right: 0.5rem; color: #f97316; font-size: 0.8rem; }
+    a { color: #60a5fa; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Jarvis Assistant — Architecture & System Design</h1>
+  <p class="tagline">Hybrid local-first AI assistant with orchestration, multi-model routing, and safety.</p>
+</header>
+<main>
+  <section class="section">
+    <span class="pill">High-level model architecture</span>
+    <h2>Model portfolio & routing</h2>
+    <p>
+      The Jarvis assistant uses a portfolio of models, each with a specific role. The system first understands the user's intent and task
+      complexity using a lightweight local "router" model and heuristics. Then it selects the most appropriate execution path and model.
+    </p>
+    <div class="grid">
+      <div class="card">
+        <h3>Local router model</h3>
+        <p>
+          A small local model (or the general model in a special "classifier mode") reads the prompt and classifies:
+          <code>intent</code> (general / coding / complex) and <code>complexity</code> (easy / medium / difficult).
+          This meta decision controls routing rather than answering the question directly.
+        </p>
+      </div>
+      <div class="card">
+        <h3>General models</h3>
+        <p>
+          A fast local general model handles everyday chat, Q&amp;A, summaries, and planning. For medium or difficult general tasks, a stronger
+          local model can be used if the hardware supports it, still keeping data on-device.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Coding models</h3>
+        <p>
+          A local coding model focuses on code generation, debugging, refactoring, and repo-aware tasks. It is paired with coding tools
+          (repo scanner, file reader/writer, test runner, shell command runner with guardrails) to form a coding agent.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Cloud models (complex path)</h3>
+        <p>
+          For difficult tasks that exceed local capacity (deep system design, multi-constraint optimization, long research), the system
+          escalates to a cloud model chain via OpenRouter. A fallback mechanism routes back to local models if cloud calls fail.
+        </p>
+      </div>
+    </div>
+    <div class="badge-row">
+      <div class="badge">Intent: general / coding / complex</div>
+      <div class="badge">Complexity: easy / medium / difficult</div>
+      <div class="badge">Routing: rules + router LLM</div>
+      <div class="badge">Fallback: cloud → local</div>
+    </div>
+  </section>
+
+  <section class="section">
+    <span class="pill">System design</span>
+    <h2>Layered system architecture</h2>
+    <p>
+      The assistant is designed as a layered system. Each layer has a clear responsibility and communicates with its neighbors via
+      well-defined interfaces. This makes the system easier to reason about, test, and extend.
+    </p>
+    <div class="diagram">
+User
+  |
+  v
+Interface layer (Streamlit UI)
+  - Chat UI, session history
+  - Voice (future), file upload
+  |
+  v
+Gateway layer (FastAPI)
+  - HTTP API (/chat, /health)
+  - Input validation, logging, streaming
+  - Input/output guardrails
+  |
+  v
+Orchestration layer (LangGraph)
+  - Shared state (intent, complexity, path, model, context)
+  - Router node (rules + router LLM)
+  - Context builder (memory + retrieval)
+  - Risk checker & approval gates
+  - Fallback handler
+  |
+  v
+Execution layers
+  ├─ General path (local general model + general tools)
+  ├─ Coding path (local coding model + coding tools)
+  └─ Complex path (OpenRouter cloud chain)
+       |
+       v
+Memory & Retrieval
+  - Short-term chat history
+  - Long-term user memory
+  - Vector DB (documents, embeddings)
+       |
+       v
+Safety & Policy
+  - Prompt injection checks
+  - PII redaction
+  - Risk classification & permissions
+    </div>
+  </section>
+
+  <section class="section">
+    <span class="pill">Routing & model selection</span>
+    <h2>Intent & complexity detection</h2>
+    <p>
+      Intent detection is implemented as a hybrid process. Simple, obvious cases are classified using deterministic rules. Ambiguous
+      cases are delegated to a small local router LLM that returns a JSON classification. This combines reliability with flexibility.
+    </p>
+    <div class="grid">
+      <div class="card">
+        <h3>Heuristic rules</h3>
+        <ul>
+          <li>Keyword patterns: coding words (bug, error, repo) → coding intent.</li>
+          <li>Complex phrases (architecture, optimize, multi-objective) → complex intent.</li>
+          <li>Prompt length: short → easy; very long → difficult.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Router LLM</h3>
+        <p>
+          For borderline prompts, the router LLM is asked to classify intent and complexity explicitly. It responds with JSON like:
+        </p>
+        <pre>{
+  "intent": "complex",
+  "complexity": "difficult"
+}</pre>
+        <p>
+          The orchestration graph stores these labels in state and uses them to choose the branch and model portfolio for execution.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Model selection</h3>
+        <p>
+          The combination of <code>intent</code> and <code>complexity</code> determines which model to use:
+        </p>
+        <ul>
+          <li>General + easy → small local general model.</li>
+          <li>Coding + medium → local coding model + tools.</li>
+          <li>Complex + difficult → cloud path via OpenRouter.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <span class="pill">Workflow</span>
+    <h2>End-to-end request workflow</h2>
+    <p>
+      This is how a single user request flows through the system, from input to final response, including safety checks and possible
+      escalation to cloud models.
+    </p>
+    <div class="workflow-step"><span>1</span> User enters a message in the Streamlit UI. The UI sends the message and session ID to the FastAPI backend.</div>
+    <div class="workflow-step"><span>2</span> FastAPI validates the payload, applies input guardrails, and logs the request. If the input is blocked (e.g., prompt injection), it returns a 400 error.</div>
+    <div class="workflow-step"><span>3</span> The orchestration graph is invoked with a fresh state: user input, session ID, and any existing history.</div>
+    <div class="workflow-step"><span>4</span> The router node runs: heuristics first, then the router LLM (if needed), to assign <code>intent</code> and <code>complexity</code>.</div>
+    <div class="workflow-step"><span>5</span> The context builder fetches relevant memory and documents from the vector DB and stores them in <code>retrieved_context</code>.</div>
+    <div class="workflow-step"><span>6</span> The graph uses the intent and complexity to choose the execution branch and model (e.g., general-local, coding-local, or complex-cloud).</div>
+    <div class="workflow-step"><span>7</span> If tools are enabled for that branch, the model can call tools through the orchestration layer. Tool calls are logged and can be gated by risk classification.</div>
+    <div class="workflow-step"><span>8</span> High-risk actions (like file writes or terminal commands) trigger an approval gate, pausing the graph until the user approves in the UI.</div>
+    <div class="workflow-step"><span>9</span> The selected model generates a response, which is then passed through output guardrails (e.g., PII redaction) and returned to the frontend.</div>
+    <div class="workflow-step"><span>10</span> The frontend displays the response along with metadata (path used, model used), and the state can be updated for the next turn.</div>
+  </section>
+
+  <section class="section">
+    <span class="pill">Summary</span>
+    <h2>Design goals</h2>
+    <p>
+      The Jarvis assistant is designed to be local-first, with cloud escalation only when necessary. Its architecture emphasizes
+      modularity (clear layers), safety (guardrails and approvals), and adaptability (multi-model routing based on intent and
+      complexity). The orchestration layer, built with LangGraph, acts as the "brain" that coordinates all components.
+    </p>
+  </section>
+</main>
+</body>
+</html>

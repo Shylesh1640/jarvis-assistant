@@ -1,8 +1,12 @@
 """Risk-check and approval-gate nodes for human-in-the-loop."""
+import logging
+
 from langchain_core.messages import AIMessage
 
 from jarvis.guardrails.risk import check_tool_risk
 from jarvis.orchestration.state import JarvisState
+
+logger = logging.getLogger(__name__)
 
 
 def check_risk(state: JarvisState) -> JarvisState:
@@ -28,8 +32,10 @@ def check_risk(state: JarvisState) -> JarvisState:
 
     # --- user has already approved → let everything through ---
     if state.get("approved"):
+        logger.info("User approved — allowing tool execution")
         state["risk_level"] = "low"
         state["approval_required"] = False
+        state["approved"] = False  # Reset so subsequent LLM calls proceed normally
         return state
 
     # --- classify every tool call ---
@@ -51,6 +57,12 @@ def check_risk(state: JarvisState) -> JarvisState:
     state["risk_level"] = max_risk
     state["approval_required"] = max_risk in ("medium", "high")
     state["pending_action"] = "; ".join(descriptions) if descriptions else None
+
+    if state["approval_required"]:
+        logger.warning("Tool risk=%s — approval required: %s", max_risk, state["pending_action"])
+    else:
+        logger.info("Tool risk=%s — no approval needed", max_risk)
+
     return state
 
 
@@ -67,4 +79,5 @@ def approval_gate(state: JarvisState) -> JarvisState:
         f"I'd like to {action_desc}.\n"
         "Shall I proceed? (Reply with approval to continue.)"
     )
+    logger.info("Approval gate triggered: %s", action_desc)
     return state
