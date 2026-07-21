@@ -19,3 +19,30 @@ app.include_router(chat_router)
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/models")
+def models() -> dict:
+    return {
+        "general": {
+            "provider": "ollama",
+            "model": settings.general_model,
+            "base_url": settings.ollama_base_url,
+        },
+        "coding": {
+            "provider": "ollama",
+            "model": settings.coding_model,
+            "base_url": settings.ollama_base_url,
+        },
+        "strong_local": {
+            "provider": "ollama",
+            "model": settings.strong_local_model,
+            "base_url": settings.ollama_base_url,
+        },
+        "complex": {
+            "provider": "openrouter",
+            "models": settings.complex_models,
+            "base_url": settings.openrouter_base_url,
+            "configured": bool(settings.openrouter_api_key),
+        },
+    }

@@ -4,13 +4,35 @@ import logging
 import httpx
 import streamlit as st
 
-API_URL = "http://localhost:8000/chat"
+BASE_URL = "http://localhost:8000"
+API_URL = f"{BASE_URL}/chat"
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("streamlit")
 
 st.set_page_config(page_title="Jarvis Assistant", page_icon="🤖")
 st.title("Jarvis Assistant")
+
+# --- Sidebar: model configuration ---
+with st.sidebar:
+    st.header("Model Configuration")
+    try:
+        models_resp = httpx.get(f"{BASE_URL}/models", timeout=5)
+        models_resp.raise_for_status()
+        cfg = models_resp.json()
+        st.subheader("Local (Ollama)")
+        for key in ("general", "coding", "strong_local"):
+            m = cfg.get(key, {})
+            st.caption(f"**{key}**")
+            st.code(f"{m.get('model', '?')}")
+        st.subheader("Complex (OpenRouter)")
+        if cfg.get("complex", {}).get("configured"):
+            for m in cfg["complex"]["models"]:
+                st.code(m)
+        else:
+            st.caption("Not configured (no API key)")
+    except Exception:
+        st.caption("Could not load model info")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -38,7 +60,7 @@ def _send_message(text: str, *, approved: bool = False) -> None:
                     "history": history,
                     "approved": approved,
                 }
-                resp = httpx.post(API_URL, json=payload, timeout=120)
+                resp = httpx.post(API_URL, json=payload, timeout=300)
                 resp.raise_for_status()
                 data = resp.json()
                 answer = data["response"]
@@ -52,6 +74,9 @@ def _send_message(text: str, *, approved: bool = False) -> None:
                     logger.info("Approval required: %s", data.get("pending_action"))
                 else:
                     st.session_state.pending_action = None
+            except httpx.TimeoutException:
+                answer = "This request is taking too long in interactive mode. Try simplifying it or run it as a background task."
+                st.error(answer)
             except Exception as exc:  # noqa: BLE001
                 answer = f"Error contacting backend: {exc}"
                 st.error(answer)

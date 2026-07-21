@@ -12,6 +12,7 @@ class JarvisState(TypedDict, total=False):
     messages: Annotated[list[Any], add_messages]
 
     intent: Literal["general", "coding", "complex"]
+    complexity: Literal["easy", "medium", "difficult"]
     selected_path: str
     selected_model: str
 
