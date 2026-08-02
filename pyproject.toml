@@ -17,6 +17,9 @@ dependencies = [
     "uvicorn[standard]>=0.51.0",
 ]
 
+[project.scripts]
+jarvis-ingest = "jarvis.cli.ingest:main"
+
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",

@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import typing as t
+import uuid
 
 import chromadb
+from langchain_core.documents import Document
 from langchain_ollama import OllamaEmbeddings
 
 from jarvis.config.settings import settings
@@ -98,8 +100,6 @@ def ingest_text(
 
     Returns the list of Chroma IDs assigned to the stored chunks.
     """
-    import uuid
-
     emb_fn = get_embedding_function()
     collection = get_collection()
     chunks = _split_text(text)
@@ -135,3 +135,83 @@ def ingest_texts(
         meta = metadatas[i] if metadatas else None
         all_ids.extend(ingest_text(text, metadata=meta))
     return all_ids
+
+
+def add_texts(
+    texts: list[str],
+    ids: list[str] | None = None,
+    metadatas: list[dict[str, t.Any]] | None = None,
+) -> list[str]:
+    """Add texts as individual chunks with explicit optional IDs.
+
+    Unlike ``ingest_texts`` (which chunks each text further), this stores
+    each item verbatim as a single chunk — useful when you have already
+    pre-chunked the source data and want stable IDs across re-ingestions.
+
+    If *ids* is None, deterministic UUID5 IDs are derived from the text
+    content + index, so re-ingesting the same text is a no-op (Chroma
+    upserts by ID).
+    """
+    if ids is not None and len(ids) != len(texts):
+        raise ValueError("ids must have the same length as texts")
+    emb_fn = get_embedding_function()
+    collection = get_collection()
+
+    resolved_ids: list[str] = []
+    documents: list[str] = []
+    embeddings: list[list[float]] = []
+    out_metas: list[dict[str, t.Any]] = []
+
+    for i, text in enumerate(texts):
+        chunk_id = ids[i] if ids is not None else uuid.uuid5(
+            uuid.NAMESPACE_OID, f"jarvis::{i}::{text[:64]}"
+        ).hex
+        meta = dict(metadatas[i]) if metadatas else {}
+        resolved_ids.append(chunk_id)
+        documents.append(text)
+        out_metas.append(meta)
+    embeddings = emb_fn.embed_documents(documents)
+
+    collection.upsert(
+        ids=resolved_ids,
+        documents=documents,
+        embeddings=embeddings,
+        metadatas=out_metas,
+    )
+    return resolved_ids
+
+
+def ingest_documents(docs: list[Document]) -> list[str]:
+    """Ingest LangChain ``Document`` objects, chunking each by content.
+
+    Each document's ``page_content`` is split into chunks via the
+    module's recursive splitter and stored with the document's
+    metadata (plus a generated chunk_id) so the source is attributable
+    at retrieval time.
+    """
+    if not docs:
+        return []
+
+    emb_fn = get_embedding_function()
+    collection = get_collection()
+
+    ids: list[str] = []
+    documents: list[str] = []
+    metadatas: list[dict[str, t.Any]] = []
+
+    for doc in docs:
+        source = (doc.metadata or {}).get("source") or "<unknown>"
+        for chunk in _split_text(doc.page_content):
+            chunk_id = uuid.uuid5(uuid.NAMESPACE_OID, f"jarvis::{source}::{chunk[:64]}").hex
+            ids.append(chunk_id)
+            documents.append(chunk)
+            metadatas.append({**(doc.metadata or {}), "chunk_id": chunk_id})
+
+    embeddings = emb_fn.embed_documents(documents)
+    collection.upsert(
+        ids=ids,
+        documents=documents,
+        embeddings=embeddings,
+        metadatas=metadatas,
+    )
+    return ids
