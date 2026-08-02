@@ -13,8 +13,10 @@ class JarvisState(TypedDict, total=False):
 
     intent: Literal["general", "coding", "complex"]
     complexity: Literal["easy", "medium", "difficult"]
+    complexity_score: int  # word-count based raw score, useful for debug
     selected_path: str
     selected_model: str
+    selection_reason: str  # human-readable explanation of model pick
 
     retrieved_context: str
     tool_calls: list[dict[str, Any]]

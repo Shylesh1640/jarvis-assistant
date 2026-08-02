@@ -9,7 +9,13 @@ class Settings(BaseSettings):
     general_model: str = "qwen3:8b"
     strong_local_model: str = "qwen3:14b"
     coding_model: str = "qwen3-coder:30b"
+    coding_model_small: str = "qwen2.5-coder:7b"
     embedding_model: str = "qwen3-embedding:latest"
+
+    # Whether to actually use the strong local model for medium/difficult
+    # general tasks. When False, the general branch always uses general_model
+    # (useful on hardware that cannot run qwen3:14b comfortably).
+    use_strong_local: bool = True
 
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"

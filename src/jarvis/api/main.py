@@ -32,6 +32,7 @@ def models() -> dict:
         "coding": {
             "provider": "ollama",
             "model": settings.coding_model,
+            "model_small": settings.coding_model_small,
             "base_url": settings.ollama_base_url,
         },
         "strong_local": {

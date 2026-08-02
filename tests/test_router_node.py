@@ -67,3 +67,30 @@ def test_medium_length_general_prompt():
     result = classify_intent(state)
     assert result["intent"] == "general"
     assert result["complexity"] == "medium"
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 extras: complexity_score field and complexity boost
+# ---------------------------------------------------------------------------
+
+def test_complexity_score_is_word_count():
+    state = {"user_input": "one two three four"}
+    result = classify_intent(state)
+    assert result["complexity_score"] == 4
+    assert result["complexity"] == "easy"
+
+
+def test_architecture_keyword_boosts_easy_to_medium():
+    # 5 words would normally be "easy", but "architecture" raises it.
+    state = {"user_input": "explain the architecture in depth"}
+    result = classify_intent(state)
+    assert result["complexity"] == "medium"
+    assert result["intent"] == "complex"  # architecture is also a complex keyword
+
+
+def test_router_does_not_touch_existing_easy_general_classification():
+    state = {"user_input": "hi there"}
+    result = classify_intent(state)
+    assert result["intent"] == "general"
+    assert result["complexity"] == "easy"
+    assert result["complexity_score"] == 2
