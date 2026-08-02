@@ -46,6 +46,27 @@ def _build_history_messages(history: list[dict[str, str]]) -> list:
     return messages
 
 
+def _build_user_message(state: JarvisState) -> str:
+    """Frame the user's input, honoring an optional highlighted selection.
+
+    When the user highlighted a snippet of a previous assistant reply and is
+    now asking a follow-up about it, we wrap the question with the snippet so
+    the model knows exactly what text is being referenced. This is a
+    presentation-time concern only — `state["user_input"]` itself is left
+    untouched so history and logging stay clean.
+    """
+    user_input = state.get("user_input", "")
+    selected = (state.get("selected_text") or "").strip()
+    if not selected:
+        return user_input
+    return (
+        "The user has selected the following text from a previous response "
+        "and is asking a follow-up question about it specifically:\n\n"
+        f'"""\n{selected}\n"""\n\n'
+        f"User question about this selection:\n{user_input}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # General branch  (tool-calling LLM)
 # ---------------------------------------------------------------------------
@@ -63,7 +84,7 @@ def _build_initial_messages(state: JarvisState) -> list:
             )
         )
 
-    messages.append(HumanMessage(content=state["user_input"]))
+    messages.append(HumanMessage(content=_build_user_message(state)))
     return messages
 
 
@@ -104,7 +125,7 @@ def run_general_branch(state: JarvisState) -> JarvisState:
 def run_coding_branch(state: JarvisState) -> JarvisState:
     logger.info("Coding branch selected")
     history = _format_history(state.get("history", []))
-    prompt = state["user_input"]
+    prompt = _build_user_message(state)
     if history:
         prompt = f"Previous conversation:\n{history}\n\nCurrent request:\n{prompt}"
 
@@ -127,7 +148,7 @@ def run_coding_branch(state: JarvisState) -> JarvisState:
 def run_complex_branch(state: JarvisState) -> JarvisState:
     logger.info("Complex branch selected")
     history = _format_history(state.get("history", []))
-    messages = [{"role": "user", "content": state["user_input"]}]
+    messages = [{"role": "user", "content": _build_user_message(state)}]
     if history:
         messages.insert(
             0,

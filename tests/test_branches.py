@@ -103,6 +103,20 @@ def test_coding_branch_uses_strong_coder_for_difficult(configured_settings, fake
     assert fake_ollama.instances[-1].model == "qwen3-coder:30b"
 
 
+def test_coding_branch_forwards_selected_text_into_prompt(configured_settings, fake_ollama):
+    state = _state(
+        "what does this line do?",
+        intent="coding", complexity="easy",
+        selected_text="yield from generator",
+    )
+    run_coding_branch(state)
+    prompt = fake_ollama.instances[-1].last_prompt
+    assert isinstance(prompt, str)
+    assert "yield from generator" in prompt
+    assert "what does this line do?" in prompt
+    assert "selected the following text" in prompt
+
+
 # ---------------------------------------------------------------------------
 # Complex branch (with mocked cloud client)
 # ---------------------------------------------------------------------------

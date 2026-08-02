@@ -57,12 +57,21 @@ def chat(payload: ChatRequest) -> ChatResponse:
 
     history = _get_history(payload.session_id, payload.history)
 
+    selected_text = (payload.selected_text or "").strip()
+
     initial_state = {
         "user_input": payload.message,
         "session_id": payload.session_id,
         "history": history,
+        "selected_text": selected_text,
         "fallback_count": 0,
     }
+
+    if selected_text:
+        logger.info(
+            "Follow-up about selected text (%d chars) for session %s",
+            len(selected_text), payload.session_id,
+        )
 
     result = jarvis_graph.invoke(initial_state)
 

@@ -6,6 +6,10 @@ class ChatRequest(BaseModel):
     session_id: str = "default"
     message: str = ""
     history: list[dict[str, str]] = []
+    # Optional snippet the user highlighted in a previous assistant message.
+    # When present, branches will frame the user's question as being about
+    # this specific text.
+    selected_text: str | None = None
     approved: bool = False
 
 

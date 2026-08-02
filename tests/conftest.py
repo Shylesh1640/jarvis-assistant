@@ -22,6 +22,7 @@ class _FakeChatOllama:
         self.base_url = base_url
         self.temperature = temperature
         self.bound_tools: list = []
+        self.last_prompt: object | None = None
         _FakeChatOllama.instances.append(self)
 
     def bind_tools(self, tools: list):
@@ -29,6 +30,8 @@ class _FakeChatOllama:
         return self
 
     def invoke(self, prompt, **kwargs):
+        # Record whatever was passed in so tests can assert prompt framing.
+        self.last_prompt = prompt
         # Return a fake response object. Branches only read .content and
         # .tool_calls, both of which are present here.
         return SimpleNamespace(content=f"[fake response from {self.model}]", tool_calls=[])

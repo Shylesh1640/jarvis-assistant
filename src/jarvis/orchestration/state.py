@@ -9,6 +9,10 @@ class JarvisState(TypedDict, total=False):
     session_id: str
     history: list[dict[str, str]]
 
+    # Text the user highlighted in a previous assistant message and is now
+    # asking a follow-up question about. Empty string means no selection.
+    selected_text: str
+
     messages: Annotated[list[Any], add_messages]
 
     intent: Literal["general", "coding", "complex"]
