@@ -25,6 +25,22 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     vector_db_path: str = "./data/vector_store"
 
+    # Folder scanned by the `jarvis ingest` CLI for .txt/.md documents to load
+    # into the long-term RAG store.
+    docs_folder: str = "./data/docs"
+
+    # --- Context-window management ---
+    # Max number of (user, assistant) history turns to keep in the prompt.
+    # Older turns are dropped before sending. 20 turns = up to 40 messages.
+    history_max_turns: int = 20
+    # Soft token-budget cap for the conversation-history block. The estimator
+    # is a word-count proxy (words * 1.3). History is truncated from the
+    # oldest end until the budget fits. RAG context + system prompt + the
+    # current user message are *not* counted against this budget.
+    context_token_budget: int = 12000
+    # Default number of chunks retrieved from the RAG store.
+    retrieval_top_k: int = 5
+
     @property
     def complex_models(self) -> list[str]:
         return [m.strip() for m in self.complex_model_chain.split(",") if m.strip()]
