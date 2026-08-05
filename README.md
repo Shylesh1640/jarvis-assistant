@@ -20,7 +20,7 @@ Copy `.env.example` to `.env` and adjust model names to match `ollama list`.
 uv run uvicorn jarvis.api.main:app --reload --app-dir src
 ```
 
-API endpoints: `GET /health`, `GET /models`, `POST /chat`.
+API endpoints: `GET /health`, `GET /models`, `GET /documents/count`, `POST /chat`.
 
 ## Run frontend
 
@@ -28,10 +28,14 @@ API endpoints: `GET /health`, `GET /models`, `POST /chat`.
 uv run streamlit run streamlit_app.py
 ```
 
-The sidebar shows the currently configured local and cloud models. After an
+The sidebar shows live backend health, the currently configured local and
+cloud models, and the current size of the RAG store. First-message
+suggestion pills help you get started. Each assistant reply is annotated
+with badges for the branch path and the model that produced it. After an
 assistant reply you can paste a snippet from it, then ask a follow-up
-question framed around that selection. Tool actions flagged medium/high risk
-surface an Approve / Deny prompt before execution.
+question framed around that selection. Tool actions flagged medium/high
+risk surface an inline Approve / Deny card before execution. The UI uses
+a dark theme configured in `.streamlit/config.toml`.
 
 ## Ingest documents into the RAG store
 
