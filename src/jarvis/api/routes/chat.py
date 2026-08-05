@@ -1,4 +1,5 @@
 """Chat route: entrypoint into the orchestration graph."""
+
 import logging
 
 from fastapi import APIRouter, HTTPException
@@ -6,6 +7,7 @@ from fastapi import APIRouter, HTTPException
 from jarvis.api.schemas.chat import ChatRequest, ChatResponse
 from jarvis.guardrails.input_guard import validate_input
 from jarvis.guardrails.output_guard import redact_output
+from jarvis.memory.retrieve import has_documents
 from jarvis.orchestration.graph import jarvis_graph
 
 logger = logging.getLogger(__name__)
@@ -20,7 +22,9 @@ _sessions: dict[str, list[dict[str, str]]] = {}
 _pending_approvals: dict[str, dict] = {}
 
 
-def _get_history(session_id: str, client_history: list[dict[str, str]]) -> list[dict[str, str]]:
+def _get_history(
+    session_id: str, client_history: list[dict[str, str]]
+) -> list[dict[str, str]]:
     """Return the conversation history to use for this request.
 
     Prefers the client-supplied *client_history* (the source of truth for
@@ -37,14 +41,18 @@ def _get_history(session_id: str, client_history: list[dict[str, str]]) -> list[
 def chat(payload: ChatRequest) -> ChatResponse:
     logger.info(
         "Chat request | session=%s | approved=%s | msg_len=%d",
-        payload.session_id, payload.approved, len(payload.message),
+        payload.session_id,
+        payload.approved,
+        len(payload.message),
     )
 
     # --- Approval resume ---
     if payload.approved:
         prev_state = _pending_approvals.pop(payload.session_id, None)
         if prev_state is None:
-            raise HTTPException(status_code=400, detail="No pending approval for this session")
+            raise HTTPException(
+                status_code=400, detail="No pending approval for this session"
+            )
         prev_state["approved"] = True
         result = jarvis_graph.invoke(prev_state)
         _update_history(payload.session_id, prev_state.get("user_input", ""), result)
@@ -54,6 +62,11 @@ def chat(payload: ChatRequest) -> ChatResponse:
     is_valid, error = validate_input(payload.message)
     if not is_valid:
         raise HTTPException(status_code=400, detail=error)
+
+    # A fresh, non-approved message supersedes any lingering approval
+    # waiting on this session — the user has moved on to a new question.
+    if _pending_approvals.pop(payload.session_id, None) is not None:
+        logger.info("Cleared stale pending approval for session %s", payload.session_id)
 
     history = _get_history(payload.session_id, payload.history)
 
@@ -70,7 +83,8 @@ def chat(payload: ChatRequest) -> ChatResponse:
     if selected_text:
         logger.info(
             "Follow-up about selected text (%d chars) for session %s",
-            len(selected_text), payload.session_id,
+            len(selected_text),
+            payload.session_id,
         )
 
     result = jarvis_graph.invoke(initial_state)
@@ -89,6 +103,7 @@ def chat(payload: ChatRequest) -> ChatResponse:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _update_history(session_id: str, user_message: str, result: dict) -> None:
     safe_response = redact_output(result.get("final_response", ""))
     session = _sessions.setdefault(session_id, [])
@@ -105,3 +120,13 @@ def _build_response(session_id: str, result: dict) -> ChatResponse:
         approval_required=result.get("approval_required", False),
         pending_action=result.get("pending_action"),
     )
+
+
+@router.get("/documents/count")
+def documents_count() -> dict[str, int]:
+    """Return the number of chunks currently in the RAG vector store."""
+    if not has_documents():
+        return {"count": 0}
+    from jarvis.memory.store import get_collection
+
+    return {"count": int(get_collection().count())}

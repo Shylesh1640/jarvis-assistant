@@ -1,4 +1,5 @@
 """Chroma DB initialisation and document ingestion."""
+
 from __future__ import annotations
 
 import typing as t
@@ -91,6 +92,7 @@ def _split_text(text: str) -> list[str]:
 # Ingestion helpers
 # ---------------------------------------------------------------------------
 
+
 def ingest_text(
     text: str,
     metadata: dict[str, t.Any] | None = None,
@@ -108,11 +110,20 @@ def ingest_text(
     metadatas: list[dict[str, t.Any]] = []
     base_meta = dict(metadata or {})
 
-    for chunk in chunks:
-        chunk_id = doc_id or uuid.uuid4().hex
+    # When a single explicit ``doc_id`` is supplied but the text splits
+    # into multiple chunks, every chunk must still get a *unique* id
+    # (Chroma rejects duplicate ids on ``add``). We namespace the supplied
+    # id per chunk and echo that id back in the chunk's metadata so the
+    # caller can still correlate them.
+    explicit_id = doc_id
+    for i, chunk in enumerate(chunks):
+        if explicit_id is not None and len(chunks) > 1:
+            chunk_id = f"{explicit_id}#{i}"
+        else:
+            chunk_id = explicit_id or uuid.uuid4().hex
         ids.append(chunk_id)
         documents.append(chunk)
-        metadatas.append({**base_meta, "chunk_id": chunk_id})
+        metadatas.append({**base_meta, "chunk_id": chunk_id, "chunk_index": i})
 
     # Chroma accepts pre-computed embeddings via the ``embeddings`` parameter.
     embeddings = emb_fn.embed_documents(documents)
@@ -163,9 +174,11 @@ def add_texts(
     out_metas: list[dict[str, t.Any]] = []
 
     for i, text in enumerate(texts):
-        chunk_id = ids[i] if ids is not None else uuid.uuid5(
-            uuid.NAMESPACE_OID, f"jarvis::{i}::{text[:64]}"
-        ).hex
+        chunk_id = (
+            ids[i]
+            if ids is not None
+            else uuid.uuid5(uuid.NAMESPACE_OID, f"jarvis::{i}::{text[:64]}").hex
+        )
         meta = dict(metadatas[i]) if metadatas else {}
         resolved_ids.append(chunk_id)
         documents.append(text)
@@ -202,7 +215,9 @@ def ingest_documents(docs: list[Document]) -> list[str]:
     for doc in docs:
         source = (doc.metadata or {}).get("source") or "<unknown>"
         for chunk in _split_text(doc.page_content):
-            chunk_id = uuid.uuid5(uuid.NAMESPACE_OID, f"jarvis::{source}::{chunk[:64]}").hex
+            chunk_id = uuid.uuid5(
+                uuid.NAMESPACE_OID, f"jarvis::{source}::{chunk[:64]}"
+            ).hex
             ids.append(chunk_id)
             documents.append(chunk)
             metadatas.append({**(doc.metadata or {}), "chunk_id": chunk_id})

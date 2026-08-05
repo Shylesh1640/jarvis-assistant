@@ -1,4 +1,5 @@
 """Functions to query Chroma and return a context string."""
+
 from __future__ import annotations
 
 from jarvis.memory.store import get_collection, get_embedding_function
@@ -41,13 +42,13 @@ def query_context(
         return ""
 
     documents = results["documents"][0]
-    distances = (results.get("distances") or [None])[0]
-    metadatas = (results.get("metadatas") or [None])[0]
+    distances = (results.get("distances") or [[]])[0]
+    metadatas = (results.get("metadatas") or [[]])[0]
 
     gathered: list[str] = []
     for i, doc in enumerate(documents):
-        dist = distances[i] if distances else None
-        meta = metadatas[i] if metadatas else {}
+        dist = distances[i] if i < len(distances) else None
+        meta = metadatas[i] if i < len(metadatas) else {}
         if score_threshold is not None and dist is not None:
             if dist > score_threshold:
                 continue
