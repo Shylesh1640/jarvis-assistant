@@ -77,7 +77,7 @@ def create_all() -> None:
     """Create every table if it doesn't already exist."""
     import jarvis.persistence.models  # noqa: F401 — register models on Base
 
-    engine_from_settings().run_sync(lambda conn: Base.metadata.create_all(conn))
+    Base.metadata.create_all(engine_from_settings())
 
 
 def reset_engine_for_tests(url: str = "sqlite:///:memory:") -> Engine:

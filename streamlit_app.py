@@ -2,20 +2,22 @@
 
 A modern, dark-themed chat UI on top of the FastAPI backend:
 
-* Sidebar shows live model configuration, backend health, and the current
-  size of the RAG document store.
+* Sidebar shows live model configuration, backend health, RAG store size,
+  and an uploader for `.txt`/`.md` documents.
 * Suggestions (pills) appear on an empty conversation to help first-time
   users; they vanish as soon as the first message is sent.
+* A toolbar exposes "Show reasoning", answer-style, "Run as background
+  task", and "Show debug info" toggles.
 * Each assistant reply is annotated with badges for the branch path and
-  the model that produced it.
+  the model that produced it, plus a "Tools used" line and RAG citations.
 * Risky tool calls surface an inline Approve / Deny card before they run.
 * Optional "select text -> ask follow-up" workflow: paste a snippet from
   the latest assistant reply, then ask a question framed around it.
 """
-
 from __future__ import annotations
 
 import logging
+import time
 
 import httpx
 import streamlit as st
@@ -27,14 +29,18 @@ BASE_URL = "http://localhost:8000"
 API_URL = f"{BASE_URL}/chat"
 HEALTH_URL = f"{BASE_URL}/health"
 MODELS_URL = f"{BASE_URL}/models"
-DOCS_URL = f"{BASE_URL}/documents/count"
+DOCS_COUNT_URL = f"{BASE_URL}/documents/count"
+DOCS_UPLOAD_URL = f"{BASE_URL}/documents/upload"
+TASKS_URL = f"{BASE_URL}/tasks"
 
-# First-message suggestions. Each label maps to the prompt actually sent.
 SUGGESTIONS = {
     "Explain an idea": "Explain how retrieval-augmented generation works, simply.",
     "Write some code": "Write a Python function that returns the n-th Fibonacci number.",
     "Do the math": "Calculate (123 + 456) * 7 and explain the steps.",
+    "Search the code": "Search the workspace for 'TODO' comments.",
 }
+
+ANSWER_STYLES = ["default", "concise", "detailed", "code"]
 
 st.set_page_config(
     page_title="Jarvis Assistant",
@@ -71,11 +77,52 @@ def fetch_health() -> dict | None:
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_doc_count() -> int | None:
     try:
-        r = httpx.get(DOCS_URL, timeout=5)
+        r = httpx.get(DOCS_COUNT_URL, timeout=5)
         r.raise_for_status()
         return int(r.json().get("count", 0))
     except Exception:
         return None
+
+
+def upload_documents(files) -> dict | None:
+    try:
+        parts = [("files", (f.name, f.read(), "text/plain")) for f in files]
+        r = httpx.post(DOCS_UPLOAD_URL, files=parts, timeout=60)
+        r.raise_for_status()
+        st.cache_data.clear()
+        return r.json()
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Upload failed: {exc}", icon=":material/error:")
+        return None
+
+
+def create_task(description: str, session_id: str) -> dict | None:
+    try:
+        r = httpx.post(
+            TASKS_URL,
+            json={"description": description, "session_id": session_id},
+            timeout=10,
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Could not start task: {exc}", icon=":material/error:")
+        return None
+
+
+def poll_task(task_id: str, timeout: float = 295.0, interval: float = 2.0) -> dict | None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            r = httpx.get(f"{TASKS_URL}/{task_id}", timeout=10)
+            r.raise_for_status()
+            data = r.json()
+            if data["status"] in ("completed", "failed"):
+                return data
+        except Exception:
+            pass
+        time.sleep(interval)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -84,15 +131,70 @@ def fetch_doc_count() -> int | None:
 
 st.session_state.setdefault("messages", [])
 st.session_state.setdefault("pending_action", None)
-# Snippet the user wants their next chat input to be about.
 st.session_state.setdefault("pending_selection", "")
-# Index of the assistant message a follow-up selection refers to.
 st.session_state.setdefault("selection_target_index", None)
+st.session_state.setdefault("toggles", {
+    "show_reasoning": False,
+    "answer_style": "default",
+    "background_task": False,
+    "debug": False,
+})
 
 
 def _clear_selection() -> None:
     st.session_state.pending_selection = ""
     st.session_state.selection_target_index = None
+
+
+def _assistant_record(answer: str, data: dict) -> dict:
+    """Persist metadata alongside an assistant reply so re-renders show it."""
+    return {
+        "role": "assistant",
+        "content": answer,
+        "path": (data.get("path_used") or "").lower() or "unknown",
+        "model": data.get("model_used"),
+        "tools_used": list(data.get("tools_used", [])),
+        "sources": list(data.get("sources", [])),
+        "retrieved_context": data.get("retrieved_context"),
+        "approval_required": bool(data.get("approval_required")),
+    }
+
+
+def _render_assistant_meta(rec: dict, *, debug: bool) -> None:
+    """Badges, tools line, citations, and an optional debug expander."""
+    path = rec.get("path", "unknown")
+    path_color = {"general": "blue", "coding": "green", "complex": "violet"}.get(
+        path, "gray"
+    )
+    with st.container(horizontal=True):
+        st.badge(path, color=path_color)
+        if model := rec.get("model"):
+            st.badge(model, color="gray")
+
+    tools = rec.get("tools_used") or []
+    if tools:
+        st.caption(f"Tools used: {', '.join(tools)}", icon=":material/build:")
+
+    sources = rec.get("sources") or []
+    if sources:
+        with st.expander(f"Sources ({len(sources)})", icon=":material/menu_book:"):
+            for i, s in enumerate(sources, 1):
+                src = s.get("source", "?")
+                chunk = s.get("chunk_id", "")
+                doc = (s.get("doc") or "").strip()
+                if len(doc) > 220:
+                    doc = doc[:217] + "..."
+                st.markdown(f"**{i}. {src}**{(' — ' + chunk) if chunk else ''}")
+                if doc:
+                    st.caption(doc)
+
+    if debug:
+        ctx = rec.get("retrieved_context") or ""
+        with st.expander("Debug info", icon=":material/bug_report:"):
+            st.caption(f"Path: `{path}` | Model: `{model or '-'}`")
+            st.caption(f"Tools: {tools or '-'}")
+            st.text("Retrieved context:")
+            st.code(ctx or "(none)", language="text")
 
 
 def _send_message(
@@ -117,8 +219,14 @@ def _send_message(
     history = [
         {"role": m["role"], "content": m["content"]}
         for m in st.session_state.messages[:-1]
-        if text
+        if text and m["role"] in ("user", "assistant")
     ]
+
+    toggles = st.session_state.toggles
+    show_reasoning = toggles["show_reasoning"]
+    answer_style = toggles["answer_style"]
+    background = toggles["background_task"]
+    debug = toggles["debug"]
 
     with st.chat_message("assistant", avatar=":material/smart_toy:"):
         with st.spinner("Thinking..."):
@@ -129,25 +237,20 @@ def _send_message(
                     "history": history,
                     "selected_text": selected_text or None,
                     "approved": approved,
+                    "show_reasoning": show_reasoning,
+                    "answer_style": answer_style if answer_style != "default" else None,
                 }
                 resp = httpx.post(API_URL, json=payload, timeout=300)
                 resp.raise_for_status()
                 data = resp.json()
                 answer = data["response"]
 
-                # Annotate the reply with badges for path + model.
-                path = (data.get("path_used") or "").lower() or "unknown"
-                path_color = {
-                    "general": "blue",
-                    "coding": "green",
-                    "complex": "violet",
-                }.get(path, "gray")
-                with st.container(horizontal=True):
-                    st.badge(path, color=path_color)
-                    if model_used := data.get("model_used"):
-                        st.badge(model_used, color="gray")
-
+                _render_assistant_meta(_assistant_record(answer, data), debug=debug)
                 st.markdown(answer)
+
+                if background and not data.get("approval_required") and not approved:
+                    st.toast("Note: toggling 'Run as background task' posts a /tasks job next time.",
+                             icon=":material/info:")
 
                 if data.get("approval_required"):
                     st.session_state.pending_action = data.get("pending_action")
@@ -155,14 +258,56 @@ def _send_message(
                 else:
                     st.session_state.pending_action = None
             except httpx.TimeoutException:
-                answer = "This request is taking too long in interactive mode. Try simplifying it or running it as a background task."
+                answer = "This request is taking too long in interactive mode. Toggle 'Run as background task' for heavy prompts."
                 st.error(answer, icon=":material/schedule:")
             except Exception as exc:  # noqa: BLE001
                 answer = f"Error contacting backend: {exc}"
                 st.error(answer, icon=":material/error:")
 
     if text:
-        st.session_state.messages.append({"role": "assistant", "content": answer})
+        st.session_state.messages.append(_assistant_record(answer, data if "data" in locals() else {}))
+
+
+def _run_background_task(description: str) -> None:
+    """Post a /tasks job, poll it, and append the result as an assistant turn."""
+    with st.chat_message("user", avatar=":material/person:"):
+        st.markdown(description)
+    st.session_state.messages.append({"role": "user", "content": description})
+
+    with st.chat_message("assistant", avatar=":material/smart_toy:"):
+        st.badge("background", color="orange")
+        started = create_task(description, "default")
+        if started is None:
+            st.session_state.messages.append(
+                {"role": "assistant", "content": "Failed to start background task."}
+            )
+            return
+        task_id = started["id"]
+        st.caption(f"Task submitted: `{task_id}` — polling…")
+        with st.spinner("Running in background…"):
+            result = poll_task(task_id)
+        if result is None:
+            answer = "Background task is still running. Poll it later via GET /tasks/{id}."
+            st.warning(answer, icon=":material/schedule:")
+            record = {"role": "assistant", "content": answer, "path": "background"}
+        elif result["status"] == "failed":
+            answer = f"Task failed: {result.get('error')}"
+            st.error(answer, icon=":material/error:")
+            record = {"role": "assistant", "content": answer, "path": "background"}
+        else:
+            answer = result.get("result") or "(no output)"
+            st.markdown(answer)
+            record = {
+                "role": "assistant",
+                "content": answer,
+                "path": "background",
+                "model": None,
+                "tools_used": [],
+                "sources": [],
+                "retrieved_context": None,
+                "approval_required": False,
+            }
+    st.session_state.messages.append(record)
 
 
 # ---------------------------------------------------------------------------
@@ -208,21 +353,32 @@ with st.sidebar:
     else:
         st.metric("Indexed chunks", count)
 
-    st.subheader("Ingest documents", divider=False)
-    st.caption("Drop `.txt` / `.md` files into `data/docs`, then run:")
-    st.code("uv run jarvis-ingest", language="bash")
+    st.subheader("Upload documents", divider=False)
+    with st.expander("Add .txt / .md files", icon=":material/upload:"):
+        uploaded = st.file_uploader(
+            "Drop files here",
+            type=["txt", "md", "markdown", "rst"],
+            accept_multiple_files=True,
+            label_visibility="collapsed",
+        )
+        if uploaded and st.button("Ingest", icon=":material/play_arrow:"):
+            res = upload_documents(uploaded)
+            if res:
+                st.success(
+                    f"Ingested {len(res.get('files', []))} file(s) "
+                    f"-> {res.get('chunks', 0)} chunk(s)."
+                )
 
     with st.expander("Tips", icon=":material/lightbulb:"):
         st.markdown(
             "- Ask coding questions to route to the strong local coder.\n"
             "- Long or architecture-style prompts route to the cloud chain.\n"
             "- Select part of a reply, paste it below the reply, then ask about it.\n"
-            "- Risky tool calls pause and ask for approval."
+            "- Risky tool calls pause and ask for approval.\n"
+            "- Toggle 'Run as background task' for very long prompts."
         )
 
-    if st.button(
-        "Clear conversation", icon=":material/delete:", use_container_width=False
-    ):
+    if st.button("Clear conversation", icon=":material/delete:"):
         st.session_state.messages = []
         st.session_state.pending_action = None
         st.session_state.pending_selection = ""
@@ -230,13 +386,45 @@ with st.sidebar:
         st.rerun()
 
 # ---------------------------------------------------------------------------
-# Conversation header
+# Conversation header + toggle toolbar
 # ---------------------------------------------------------------------------
 
 st.title("Chat with Jarvis")
 st.caption(
     "General, coding, and complex tasks — routed to the right model automatically."
 )
+
+tg = st.session_state.toggles
+with st.container(horizontal=True):
+    st.toggle(
+        "Reasoning",
+        key="tgl_reasoning",
+        value=tg["show_reasoning"],
+        help="Ask the model for a short reasoning section before the answer.",
+        on_change=lambda: tg.update({"show_reasoning": st.session_state.tgl_reasoning}),
+    )
+    st.toggle(
+        "Debug",
+        key="tgl_debug",
+        value=tg["debug"],
+        help="Show retrieved context and metadata for each reply.",
+        on_change=lambda: tg.update({"debug": st.session_state.tgl_debug}),
+    )
+    st.toggle(
+        "Background",
+        key="tgl_bg",
+        value=tg["background_task"],
+        help="Run very long prompts as a background /tasks job.",
+        on_change=lambda: tg.update({"background_task": st.session_state.tgl_bg}),
+    )
+    st.selectbox(
+        "Style",
+        ANSWER_STYLES,
+        key="sel_style",
+        index=ANSWER_STYLES.index(tg["answer_style"]),
+        label_visibility="collapsed",
+        on_change=lambda: tg.update({"answer_style": st.session_state.sel_style}),
+    )
 
 # Suggestions on an empty conversation (pills vanish once a message lands).
 if not st.session_state.messages:
@@ -246,7 +434,10 @@ if not st.session_state.messages:
         label_visibility="collapsed",
     )
     if selected:
-        _send_message(SUGGESTIONS[selected])
+        if tg["background_task"]:
+            _run_background_task(SUGGESTIONS[selected])
+        else:
+            _send_message(SUGGESTIONS[selected])
         st.rerun()
 
 # ---------------------------------------------------------------------------
@@ -257,6 +448,8 @@ for idx, msg in enumerate(st.session_state.messages):
     avatar = ":material/person:" if msg["role"] == "user" else ":material/smart_toy:"
     with st.chat_message(msg["role"], avatar=avatar):
         st.markdown(msg["content"])
+        if msg["role"] == "assistant" and msg.get("path"):
+            _render_assistant_meta(msg, debug=tg["debug"])
 
 # ---------------------------------------------------------------------------
 # Selection panel under the latest assistant message
@@ -332,6 +525,9 @@ user_input = st.chat_input(pending_hint, submit_mode="disable")
 
 if user_input:
     selection = st.session_state.pending_selection
-    _send_message(user_input, selected_text=selection)
+    if tg["background_task"]:
+        _run_background_task(user_input)
+    else:
+        _send_message(user_input, selected_text=selection)
     if selection:
         _clear_selection()
