@@ -13,6 +13,10 @@ class JarvisState(TypedDict, total=False):
     # asking a follow-up question about. Empty string means no selection.
     selected_text: str
 
+    # UI toggles plumbed from the request schema.
+    show_reasoning: bool
+    answer_style: str  # "concise" | "detailed" | "code"
+
     messages: Annotated[list[Any], add_messages]
 
     intent: Literal["general", "coding", "complex"]
@@ -23,8 +27,10 @@ class JarvisState(TypedDict, total=False):
     selection_reason: str  # human-readable explanation of model pick
 
     retrieved_context: str
+    sources: list[dict[str, str]]
     tool_calls: list[dict[str, Any]]
     tool_results: list[dict[str, Any]]
+    tools_used: list[str]
 
     risk_level: Literal["low", "medium", "high"]
     approval_required: bool
@@ -35,3 +41,7 @@ class JarvisState(TypedDict, total=False):
     fallback_count: int
     error_state: str | None
     final_response: str
+
+    # When True, this turn runs as a background /tasks job. Branches use it
+    # to record status instead of streaming a reply.
+    as_background_task: bool

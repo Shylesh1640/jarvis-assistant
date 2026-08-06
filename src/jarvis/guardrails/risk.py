@@ -2,12 +2,13 @@
 from typing import Literal
 
 _HIGH_RISK_TOOLS = {
-    "write_file",
     "delete_file",
     "remove_file",
     "rmdir",
     "shell_exec",
+    "run_shell",
     "run_command",
+    "run_tests",
     "execute_python",
     "install_package",
     "drop_database",
@@ -17,6 +18,8 @@ _HIGH_RISK_TOOLS = {
 
 _MEDIUM_RISK_TOOLS = {
     "read_file",
+    "write_file",
+    "edit_file",
     "file_write",
     "http_request",
     "pip_install",

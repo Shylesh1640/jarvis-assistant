@@ -5,6 +5,8 @@ from fastapi import FastAPI
 from jarvis.config.settings import settings
 
 from jarvis.api.routes.chat import router as chat_router
+from jarvis.api.routes.documents import router as documents_router
+from jarvis.api.routes.tasks import router as tasks_router
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
@@ -14,6 +16,8 @@ logging.basicConfig(
 app = FastAPI(title="Jarvis Assistant API")
 
 app.include_router(chat_router)
+app.include_router(tasks_router)
+app.include_router(documents_router)
 
 
 @app.get("/health")

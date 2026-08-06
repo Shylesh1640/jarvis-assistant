@@ -1,0 +1,27 @@
+# Postgres for Jarvis Assistant session / message / summary / task storage.
+#
+#   docker compose up -d postgres
+#
+# The app falls back to a local SQLite file (data/jarvis.db) when
+# POSTGRES_DSN is empty, so Docker is optional for local hacking.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: jarvis-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: jarvis
+      POSTGRES_PASSWORD: jarvis
+      POSTGRES_DB: jarvis
+    ports:
+      - "5432:5432"
+    volumes:
+      - jarvis_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jarvis -d jarvis"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  jarvis_pgdata:

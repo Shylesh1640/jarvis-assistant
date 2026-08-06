@@ -9,7 +9,9 @@ def query_context(
     query: str,
     k: int = 4,
     score_threshold: float | None = None,
-) -> str:
+    *,
+    with_sources: bool = False,
+) -> str | tuple[str, list[dict[str, str]]]:
     """Embed *query*, search Chroma, and return a formatted context block.
 
     Parameters
@@ -21,11 +23,15 @@ def query_context(
     score_threshold:
         If set, only results with a distance **below** this value are kept
         (lower distance = more similar).
+    with_sources:
+        When True, return ``(context_block, sources)`` where ``sources`` is
+        a list of ``{"source", "chunk_id", "doc"}`` dicts for UI citations.
 
     Returns
     -------
     A string suitable for injecting into an LLM prompt as retrieved context,
-    or an empty string if nothing relevant is found.
+    or an empty string if nothing relevant is found. With ``with_sources``
+    the return is a (string, list) tuple.
     """
     emb_fn = get_embedding_function()
     collection = get_collection()
@@ -39,13 +45,14 @@ def query_context(
     )
 
     if not results["documents"] or not results["documents"][0]:
-        return ""
+        return ("", []) if with_sources else ""
 
     documents = results["documents"][0]
     distances = (results.get("distances") or [[]])[0]
     metadatas = (results.get("metadatas") or [[]])[0]
 
     gathered: list[str] = []
+    sources: list[dict[str, str]] = []
     for i, doc in enumerate(documents):
         dist = distances[i] if i < len(distances) else None
         meta = metadatas[i] if i < len(metadatas) else {}
@@ -53,15 +60,16 @@ def query_context(
             if dist > score_threshold:
                 continue
 
-        tag = f"[Doc {i + 1}]"
-        if src := meta.get("source"):
-            tag = f"[{src}]"
+        src = meta.get("source") or f"Doc {i + 1}"
+        chunk_id = meta.get("chunk_id") or ""
+        tag = f"[{src}]" if src else f"[Doc {i + 1}]"
         gathered.append(f"{tag} {doc}")
+        sources.append({"source": src, "chunk_id": chunk_id, "doc": doc})
 
     if not gathered:
-        return ""
+        return ("", []) if with_sources else ""
 
-    return "\n\n".join(gathered)
+    return ("\n\n".join(gathered), sources) if with_sources else "\n\n".join(gathered)
 
 
 def has_documents() -> bool:

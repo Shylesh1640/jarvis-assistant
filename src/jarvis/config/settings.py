@@ -29,6 +29,35 @@ class Settings(BaseSettings):
     # into the long-term RAG store.
     docs_folder: str = "./data/docs"
 
+    # --- Coding toolset ---
+    # Root directory the write/exec tools are allowed to operate inside. Any
+    # path that escapes this root (via absolute paths or ``..``) is rejected
+    # before the tool runs. Set to an empty string to disable the guard
+    # (NOT recommended).
+    workspace_dir: str = "./workspace"
+    # Shell commands the run_shell tool will accept without further review.
+    # Risk classification still applies; this only governs the allowlist.
+    shell_allowed_commands: str = "ls,dir,cat,type,echo,git,pytest,python -m pytest,ruff,pip,uv,npm,npm run build,npm test"
+    # Hard wall-clock cap for run_tests / run_shell invocations (seconds).
+    tool_subprocess_timeout: int = 120
+
+    # --- Persistence ---
+    # Postgres DSN. When empty the app falls back to a local SQLite file at
+    # ``sqlite_path`` so the assistant still works without Docker.
+    postgres_dsn: str = ""
+    sqlite_path: str = "./data/jarvis.db"
+    # After how many (user, assistant) turns a conversation is summarized.
+    summary_every_turns: int = 10
+
+    # --- UI / request toggles ---
+    # Default answer style emitted in the system prompt when the client
+    # doesn't request one: "" | "concise" | "detailed" | "code". Empty
+    # means "no style directive" so prompts remain unchanged unless a UI
+    # toggle is on (preserving the original assistant behaviour).
+    default_answer_style: str = ""
+    # When True, the system prompt asks the model to include brief reasoning.
+    default_show_reasoning: bool = False
+
     # --- Context-window management ---
     # Max number of (user, assistant) history turns to keep in the prompt.
     # Older turns are dropped before sending. 20 turns = up to 40 messages.

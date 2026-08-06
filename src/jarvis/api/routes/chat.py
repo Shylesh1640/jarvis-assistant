@@ -1,5 +1,11 @@
-"""Chat route: entrypoint into the orchestration graph."""
+"""Chat route: entrypoint into the orchestration graph.
 
+History / summaries / tasks live in the persistence layer (Postgres via
+Docker, or a local SQLite file when no DSN is set). Pending-approval
+state stays in-process (it carries LangChain message objects that aren't
+trivially JSON-serialisable) so a server restart drops a waiting
+approval — that's intentional and matches the existing contract.
+"""
 import logging
 
 from fastapi import APIRouter, HTTPException
@@ -7,19 +13,70 @@ from fastapi import APIRouter, HTTPException
 from jarvis.api.schemas.chat import ChatRequest, ChatResponse
 from jarvis.guardrails.input_guard import validate_input
 from jarvis.guardrails.output_guard import redact_output
-from jarvis.memory.retrieve import has_documents
+from jarvis.memory.summaries import maybe_summarize
 from jarvis.orchestration.graph import jarvis_graph
+from jarvis.observability.trace import finish_trace, new_trace, trace_event
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# ---------------------------------------------------------------------------
-# In-memory session store  (short-term memory per session_id)
-# ---------------------------------------------------------------------------
+import threading as _threading
+
+from jarvis.persistence import create_all as _db_create_all
+from jarvis.persistence import repos as _repos
+
+# In-memory cache for the client-is-source-of-truth path (Streamlit sends
+# its own history). The DB holds the durable record.
 _sessions: dict[str, list[dict[str, str]]] = {}
-# Holds full graph state for approval resume
+
+# Holds full *live* LangGraph state for approval resume (transient).
 _pending_approvals: dict[str, dict] = {}
+
+_db_ready = False
+_db_lock = _threading.Lock()
+
+
+def _ensure_db() -> None:
+    """Create tables on first use. Failures fall back to in-memory mode."""
+    global _db_ready
+    if _db_ready:
+        return
+    with _db_lock:
+        if not _db_ready:
+            try:
+                _db_create_all()
+                _db_ready = True
+                logger.info("Persistence layer ready")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Persistence unavailable, using in-memory mode: %s", exc)
+                _db_ready = False
+
+
+def _persist_message(
+    session_id: str,
+    *,
+    role: str,
+    content: str,
+    result: dict | None = None,
+) -> None:
+    """Append a turn to the durable store; no-op if DB is unavailable."""
+    _ensure_db()
+    if not _db_ready:
+        return
+    try:
+        _repos.sessions.get_or_create(session_id)
+        _repos.messages.add(
+            session_id,
+            role=role,
+            content=content,
+            path_used=result.get("selected_path") if result else None,
+            model_used=result.get("selected_model") if result else None,
+            tools_used=result.get("tools_used") if result else None,
+            sources=result.get("sources") if result else None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Persisting message failed: %s", exc)
 
 
 def _get_history(
@@ -45,28 +102,36 @@ def chat(payload: ChatRequest) -> ChatResponse:
         payload.approved,
         len(payload.message),
     )
+    tr = new_trace(session_id=payload.session_id, approved=payload.approved)
 
     # --- Approval resume ---
     if payload.approved:
         prev_state = _pending_approvals.pop(payload.session_id, None)
         if prev_state is None:
+            trace_event(tr, "approval_resume_missing")
+            finish_trace(tr)
             raise HTTPException(
                 status_code=400, detail="No pending approval for this session"
             )
+        trace_event(tr, "approval_resume")
         prev_state["approved"] = True
         result = jarvis_graph.invoke(prev_state)
         _update_history(payload.session_id, prev_state.get("user_input", ""), result)
+        finish_trace(tr, result=result)
         return _build_response(payload.session_id, result)
 
     # --- Normal request ---
     is_valid, error = validate_input(payload.message)
     if not is_valid:
+        trace_event(tr, f"input_rejected: {error}")
+        finish_trace(tr)
         raise HTTPException(status_code=400, detail=error)
 
     # A fresh, non-approved message supersedes any lingering approval
     # waiting on this session — the user has moved on to a new question.
     if _pending_approvals.pop(payload.session_id, None) is not None:
         logger.info("Cleared stale pending approval for session %s", payload.session_id)
+        trace_event(tr, "cleared_stale_approval")
 
     history = _get_history(payload.session_id, payload.history)
 
@@ -78,6 +143,10 @@ def chat(payload: ChatRequest) -> ChatResponse:
         "history": history,
         "selected_text": selected_text,
         "fallback_count": 0,
+        # UI toggles plumbed end-to-end through the graph state.
+        "show_reasoning": payload.show_reasoning,
+        "answer_style": payload.answer_style,
+        "as_background_task": False,
     }
 
     if selected_text:
@@ -88,6 +157,15 @@ def chat(payload: ChatRequest) -> ChatResponse:
         )
 
     result = jarvis_graph.invoke(initial_state)
+    trace_event(tr, "graph_completed")
+    trace_event(
+        tr,
+        "selected",
+        intent=result.get("intent"),
+        complexity=result.get("complexity"),
+        model=result.get("selected_model"),
+        path=result.get("selected_path"),
+    )
 
     # --- If approval is needed, store state for resume ---
     if result.get("approval_required"):
@@ -96,6 +174,7 @@ def chat(payload: ChatRequest) -> ChatResponse:
     else:
         _update_history(payload.session_id, payload.message, result)
 
+    finish_trace(tr, result=result)
     return _build_response(payload.session_id, result)
 
 
@@ -109,6 +188,12 @@ def _update_history(session_id: str, user_message: str, result: dict) -> None:
     session = _sessions.setdefault(session_id, [])
     session.append({"role": "user", "content": user_message})
     session.append({"role": "assistant", "content": safe_response})
+    _persist_message(session_id, role="user", content=user_message)
+    _persist_message(session_id, role="assistant", content=safe_response, result=result)
+    try:
+        maybe_summarize(session_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("maybe_summarize failed: %s", exc)
 
 
 def _build_response(session_id: str, result: dict) -> ChatResponse:
@@ -119,14 +204,8 @@ def _build_response(session_id: str, result: dict) -> ChatResponse:
         model_used=result.get("selected_model"),
         approval_required=result.get("approval_required", False),
         pending_action=result.get("pending_action"),
+        tools_used=list(result.get("tools_used", [])),
+        sources=list(result.get("sources", [])),
+        retrieved_context=result.get("retrieved_context", "") or None,
     )
 
-
-@router.get("/documents/count")
-def documents_count() -> dict[str, int]:
-    """Return the number of chunks currently in the RAG vector store."""
-    if not has_documents():
-        return {"count": 0}
-    from jarvis.memory.store import get_collection
-
-    return {"count": int(get_collection().count())}

@@ -20,7 +20,6 @@ from jarvis.api.main import app
 def client(monkeypatch):
     """FastAPI TestClient with the graph and RAG layer stubbed out."""
     monkeypatch.setattr(routes.chat, "jarvis_graph", _StubGraph())
-    monkeypatch.setattr(routes.chat, "has_documents", lambda: True)
     routes.chat._sessions.clear()
     routes.chat._pending_approvals.clear()
     return TestClient(app)
@@ -42,6 +41,9 @@ def _default_invoke(state):
     state["selected_model"] = "qwen3:8b"
     state.setdefault("approval_required", False)
     state.setdefault("pending_action", None)
+    state.setdefault("tools_used", [])
+    state.setdefault("sources", [])
+    state.setdefault("retrieved_context", "")
     return state
 
 
@@ -59,16 +61,22 @@ def test_health(client):
 def test_documents_count(client, monkeypatch):
     mock_col = MagicMock()
     mock_col.count.return_value = 42
-    from jarvis.memory import store
+    from jarvis.api.routes import documents as docs_mod
 
-    monkeypatch.setattr(store, "get_collection", lambda: mock_col)
+    monkeypatch.setattr(docs_mod, "get_collection", lambda: mock_col)
     r = client.get("/documents/count")
     assert r.status_code == 200
     assert r.json() == {"count": 42}
 
 
-def test_documents_count_zero_when_no_docs(client, monkeypatch):
-    monkeypatch.setattr(routes.chat, "has_documents", lambda: False)
+def test_documents_count_zero_on_store_error(client, monkeypatch):
+    from jarvis.api.routes import documents as docs_mod
+
+    def _boom():
+        raise RuntimeError("store unavailable")
+
+    monkeypatch.setattr(docs_mod, "get_collection", _boom)
+    # documents route catches store errors and reports 0.
     r = client.get("/documents/count")
     assert r.status_code == 200
     assert r.json() == {"count": 0}
