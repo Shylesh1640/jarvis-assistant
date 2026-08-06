@@ -1,6 +1,4 @@
 """Tests for ``jarvis.tools.coding.paths`` (workspace path guard)."""
-from pathlib import Path
-
 import pytest
 
 from jarvis.tools.coding.paths import (

@@ -14,6 +14,7 @@ from typing import Iterator
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from jarvis.config.settings import settings
 
@@ -31,19 +32,33 @@ def _build_engine(url: str) -> Engine:
     connect_args = {}
     if url.startswith("sqlite"):
         connect_args["check_same_thread"] = False
+        # An in-memory SQLite DB is per-connection; a StaticPool makes every
+        # connection (including background task worker threads) share the
+        # same underlying in-memory database.
+        if url.startswith("sqlite:///:memory:") or url == "sqlite://":
+            return create_engine(
+                url,
+                future=True,
+                connect_args=connect_args,
+                poolclass=StaticPool,
+            )
     return create_engine(url, future=True, connect_args=connect_args)
 
 
 def engine_from_settings() -> Engine:
     """Lazily build and cache the global engine from settings."""
-    global _engine
+    global _engine, _SessionLocal
     if _engine is not None:
         return _engine
     with _engine_lock:
         if _engine is None:
             url = settings.postgres_dsn or f"sqlite:///{settings.sqlite_path}"
             _engine = _build_engine(url)
-            _SessionLocal = sessionmaker(bind=_engine, autoflush=False, future=True)
+            # Keep loaded attributes populated after the session closes so
+            # repo methods can return ORM instances safely.
+            _SessionLocal = sessionmaker(
+                bind=_engine, autoflush=False, future=True, expire_on_commit=False
+            )
     return _engine
 
 
@@ -85,5 +100,7 @@ def reset_engine_for_tests(url: str = "sqlite:///:memory:") -> Engine:
     global _engine, _SessionLocal
     with _engine_lock:
         _engine = _build_engine(url)
-        _SessionLocal = sessionmaker(bind=_engine, autoflush=False, future=True)
+        _SessionLocal = sessionmaker(
+            bind=_engine, autoflush=False, future=True, expire_on_commit=False
+        )
     return _engine

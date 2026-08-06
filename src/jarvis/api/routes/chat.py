@@ -21,10 +21,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-import threading as _threading
+import threading as _threading  # noqa: E402
 
-from jarvis.persistence import create_all as _db_create_all
-from jarvis.persistence import repos as _repos
+from jarvis.persistence import create_all as _db_create_all  # noqa: E402
+from jarvis.persistence import repos as _repos  # noqa: E402
 
 # In-memory cache for the client-is-source-of-truth path (Streamlit sends
 # its own history). The DB holds the durable record.

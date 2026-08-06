@@ -63,7 +63,7 @@ def test_general_branch_picks_strong_local_for_difficult(configured_settings, fa
     state["messages"] = []
     run_general_branch(state)
     assert state["selected_model"] == "qwen3:14b"
-    assert "strong local" in state["selection_reason"]
+    assert state["selection_reason"] == "general branch using qwen3:14b"
 
 
 def test_coding_branch_records_model_and_reason(configured_settings, fake_ollama):

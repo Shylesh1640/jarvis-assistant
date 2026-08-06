@@ -55,6 +55,7 @@ def test_history_preserves_order_and_metadata():
     assert history[1]["modelUsed"] == "qwen3:8b"
     assert history[1]["toolsUsed"] == ["calculator"]
     assert history[1]["sources"][0]["source"] == "docs/x.md"
+    assert isinstance(mid1, int) and isinstance(mid2, int)
 
 
 def test_count_for_session_empty():

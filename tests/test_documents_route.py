@@ -56,8 +56,10 @@ def test_upload_rejects_empty_file(client):
 
 
 def test_upload_rejects_no_files(client):
+    # FastAPI requires at least one UploadFile in the list, so an empty
+    # body fails validation before the handler's own 400 guard.
     r = client.post("/documents/upload", files=[])
-    assert r.status_code == 400
+    assert r.status_code == 422
 
 
 def test_upload_rejects_oversized(client, monkeypatch):

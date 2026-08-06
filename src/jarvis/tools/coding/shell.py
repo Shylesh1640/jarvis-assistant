@@ -17,7 +17,7 @@ from collections.abc import Iterable
 from langchain_core.tools import tool
 
 from jarvis.config.settings import settings
-from jarvis.tools.coding.paths import WorkspaceError, workspace_root
+from jarvis.tools.coding.paths import workspace_root
 
 logger = logging.getLogger("jarvis.tools.shell")
 

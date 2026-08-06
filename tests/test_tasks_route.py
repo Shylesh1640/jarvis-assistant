@@ -6,7 +6,6 @@ completes synchronously inside the worker thread almost immediately.
 from __future__ import annotations
 
 import time
-from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient

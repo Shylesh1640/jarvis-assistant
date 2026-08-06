@@ -1,9 +1,6 @@
 """Tests for write_file / edit_file coding tools."""
-from pathlib import Path
-
 import pytest
 
-from jarvis.tools.coding.paths import WorkspaceError
 from jarvis.tools.coding.write_ops import edit_file, write_file
 
 

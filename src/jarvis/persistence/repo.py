@@ -11,7 +11,6 @@ from __future__ import annotations
 from typing import Any
 
 from sqlalchemy import desc, func, select
-from sqlalchemy.orm import Session
 
 from jarvis.persistence.engine import get_session
 from jarvis.persistence.models import (
@@ -101,7 +100,7 @@ class MessageRepo:
             "id": row.id,
             "role": row.role,
             "content": row.content,
-            "path_used": row.path_used,
+            "pathUsed": row.path_used,
             "modelUsed": row.model_used,
             "toolsUsed": list(row.tools_used or []),
             "sources": list(row.sources or []),
