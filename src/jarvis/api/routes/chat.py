@@ -14,6 +14,12 @@ from jarvis.api.schemas.chat import ChatRequest, ChatResponse
 from jarvis.guardrails.input_guard import validate_input
 from jarvis.guardrails.output_guard import redact_output
 from jarvis.memory.summaries import maybe_summarize
+from jarvis.orchestration.branches import (
+    OllamaModelLoadError,
+    OllamaOutOfMemoryError,
+    OllamaRequestTimeoutError,
+    OllamaUnavailableError,
+)
 from jarvis.orchestration.graph import jarvis_graph
 from jarvis.observability.trace import finish_trace, new_trace, trace_event
 
@@ -156,8 +162,57 @@ def chat(payload: ChatRequest) -> ChatResponse:
             payload.session_id,
         )
 
-    result = jarvis_graph.invoke(initial_state)
+    try:
+        result = jarvis_graph.invoke(initial_state)
+    except OllamaUnavailableError as exc:
+        trace_event(tr, "error", category="ollama_unavailable")
+        finish_trace(tr)
+        logger.warning("Ollama unavailable: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="The local model server (Ollama) is not running. Start it with `ollama serve` and retry.",
+        ) from exc
+    except OllamaModelLoadError as exc:
+        trace_event(tr, "error", category="model_not_found")
+        finish_trace(tr)
+        logger.warning("Model load failed: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail="The configured model could not be loaded. Run `ollama list` to confirm it is available.",
+        ) from exc
+    except OllamaOutOfMemoryError as exc:
+        trace_event(tr, "error", category="out_of_memory")
+        finish_trace(tr)
+        logger.warning("Out of memory: %s", exc)
+        raise HTTPException(
+            status_code=507,
+            detail="The model + context does not fit in available VRAM/RAM. Lower OLLAMA_CONTEXT_LENGTH or reduce history.",
+        ) from exc
+    except OllamaRequestTimeoutError as exc:
+        trace_event(tr, "error", category="request_timeout")
+        finish_trace(tr)
+        logger.warning("Request timeout: %s", exc)
+        raise HTTPException(
+            status_code=504,
+            detail="The local model took too long to respond. Try a shorter prompt or run it as a background task.",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        trace_event(tr, "error", category="unknown")
+        finish_trace(tr)
+        logger.exception("Graph invocation failed")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Local model request failed: {exc.__class__.__name__}. Check the server logs.",
+        ) from exc
     trace_event(tr, "graph_completed")
+    trace_event(
+        tr,
+        "selected",
+        intent=result.get("intent"),
+        complexity=result.get("complexity"),
+        model=result.get("selected_model"),
+        path=result.get("selected_path"),
+    )
     trace_event(
         tr,
         "selected",

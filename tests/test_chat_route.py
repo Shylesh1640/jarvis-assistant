@@ -55,7 +55,10 @@ def _default_invoke(state):
 def test_health(client):
     r = client.get("/health")
     assert r.status_code == 200
-    assert r.json() == {"status": "ok"}
+    body = r.json()
+    assert body["status"] == "ok"
+    # /health now also reports Ollama reachability (best-effort).
+    assert "ollama_reachable" in body
 
 
 def test_documents_count(client, monkeypatch):

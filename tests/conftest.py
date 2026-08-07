@@ -21,6 +21,13 @@ class _FakeChatOllama:
         self.model = model
         self.base_url = base_url
         self.temperature = temperature
+        # Store any runtime options passed by ollama_client._build (num_ctx,
+        # keep_alive, etc.) so tests can assert them without a real ChatOllama.
+        self.options = kwargs
+        self.num_ctx = kwargs.get("num_ctx")
+        self.keep_alive = kwargs.get("keep_alive")
+        self.num_gpu = kwargs.get("num_gpu")
+        self.num_predict = kwargs.get("num_predict")
         self.bound_tools: list = []
         self.last_prompt: object | None = None
         _FakeChatOllama.instances.append(self)

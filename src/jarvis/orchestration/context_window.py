@@ -59,6 +59,26 @@ def estimate_tokens(text: str) -> int:
     return int(len(text.split()) * _TOKENS_PER_WORD) + 1
 
 
+def _cap_to_tokens(text: str, cap: int) -> str:
+    """Truncate *text* to at most *cap* estimated tokens (word-count proxy).
+
+    A cap <= 0 means unbounded (return text as-is). Truncation is word-based
+    and appends a small ellipsis marker so the model knows content was cut.
+    """
+    if cap <= 0 or not text:
+        return text
+    tokens = estimate_tokens(text)
+    if tokens <= cap:
+        return text
+    max_words = max(1, int(cap / _TOKENS_PER_WORD))
+    words = text.split()
+    truncated = " ".join(words[:max_words])
+    logger.debug(
+        "Capped text: %d -> %d tokens (cap=%d)", tokens, estimate_tokens(truncated), cap,
+    )
+    return truncated + "\n…[truncated]"
+
+
 def _history_tokens(history: list[dict[str, str]]) -> int:
     return sum(estimate_tokens(m.get("content", "")) for m in history)
 
@@ -163,10 +183,14 @@ def format_retrieved_context(context: str) -> str:
 
     The model is instructed (in the system prompt) to treat this block as
     authoritative when relevant. Empty / whitespace-only context returns "".
+    The context is also capped to ``settings.rag_context_token_cap`` tokens
+    (word-count proxy) so a large RAG hit cannot blow the model context
+    window. A cap of 0 means unbounded (legacy behaviour).
     """
     cleaned = (context or "").strip()
     if not cleaned:
         return ""
+    cleaned = _cap_to_tokens(cleaned, settings.rag_context_token_cap)
     return f"{RETRIEVED_CONTEXT_OPEN}\n{cleaned}\n{RETRIEVED_CONTEXT_CLOSE}"
 
 
@@ -180,9 +204,12 @@ def frame_user_message(user_input: str, selected_text: str) -> str:
     When ``selected_text`` is a non-empty string, the question is wrapped
     so the model knows it is specifically about that snippet. The snippet
     is fenced with `\"\"\"` so the model doesn't mistake it for the user's
-    own words.
+    own words. The selection is capped to ``settings.selected_text_token_cap``
+    tokens (word-count proxy) so a giant paste cannot dominate the context
+    window. A cap of 0 means unbounded.
     """
     selected = (selected_text or "").strip()
+    selected = _cap_to_tokens(selected, settings.selected_text_token_cap)
     if not selected:
         return user_input
     return (
@@ -230,6 +257,7 @@ def build_final_messages(state: JarvisState, s: Settings = settings) -> list[Bas
             messages.append(AIMessage(content=content))
 
     messages.append(HumanMessage(content=build_user_message(state)))
+    _log_context_size(state, messages, s)
     return messages
 
 
@@ -257,7 +285,9 @@ def build_final_prompt(state: JarvisState, s: Settings = settings) -> str:
         sections.append("Recent conversation:\n" + "\n".join(lines))
 
     sections.append("Current request:\n" + build_user_message(state))
-    return "\n\n".join(sections)
+    prompt = "\n\n".join(sections)
+    _log_context_size_str(state, prompt, s)
+    return prompt
 
 
 def build_final_chat_dicts(state: JarvisState, s: Settings = settings) -> list[dict[str, str]]:
@@ -282,7 +312,47 @@ def build_final_chat_dicts(state: JarvisState, s: Settings = settings) -> list[d
             items.append({"role": role, "content": m.get("content", "")})
 
     items.append({"role": "user", "content": build_user_message(state)})
+    _log_context_size_dict(state, items, s)
     return items
+
+
+# ---------------------------------------------------------------------------
+# Context-size logging (original history estimate vs final prompt estimate)
+# ---------------------------------------------------------------------------
+
+def _msg_text(msg: object) -> str:
+    if hasattr(msg, "content"):
+        return str(msg.content or "")
+    if isinstance(msg, dict):
+        return str(msg.get("content", "") or "")
+    return str(msg or "")
+
+
+def _log_context_size(state: JarvisState, messages: list, s: Settings) -> None:
+    original = _history_tokens(state.get("history", []))
+    final = sum(estimate_tokens(_msg_text(m)) for m in messages)
+    logger.info(
+        "Context estimate: history=%d -> prompt=%d tokens (num_ctx=%d, max_turns=%d, budget=%d)",
+        original, final, s.ollama_context_length, s.history_max_turns, s.context_token_budget,
+    )
+
+
+def _log_context_size_str(state: JarvisState, prompt: str, s: Settings) -> None:
+    original = _history_tokens(state.get("history", []))
+    final = estimate_tokens(prompt)
+    logger.info(
+        "Context estimate: history=%d -> prompt=%d tokens (num_ctx=%d, max_turns=%d, budget=%d)",
+        original, final, s.ollama_context_length, s.history_max_turns, s.context_token_budget,
+    )
+
+
+def _log_context_size_dict(state: JarvisState, items: list[dict], s: Settings) -> None:
+    original = _history_tokens(state.get("history", []))
+    final = sum(estimate_tokens(str(it.get("content", ""))) for it in items)
+    logger.info(
+        "Context estimate: history=%d -> prompt=%d tokens (num_ctx=%d, max_turns=%d, budget=%d)",
+        original, final, s.ollama_context_length, s.history_max_turns, s.context_token_budget,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -6,6 +6,7 @@ from jarvis.config.settings import settings
 
 from jarvis.api.routes.chat import router as chat_router
 from jarvis.api.routes.documents import router as documents_router
+from jarvis.api.routes.runtime import router as runtime_router
 from jarvis.api.routes.tasks import router as tasks_router
 
 logging.basicConfig(
@@ -18,11 +19,19 @@ app = FastAPI(title="Jarvis Assistant API")
 app.include_router(chat_router)
 app.include_router(tasks_router)
 app.include_router(documents_router)
+app.include_router(runtime_router)
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict:
+    """Basic liveness; reachability of Ollama is reported under /runtime."""
+    from jarvis.models.runtime_diagnostics import check_ollama_reachable
+
+    ollama_ok, _ = check_ollama_reachable()
+    return {
+        "status": "ok",
+        "ollama_reachable": ollama_ok,
+    }
 
 
 @app.get("/models")

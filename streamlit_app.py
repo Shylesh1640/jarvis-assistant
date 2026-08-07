@@ -32,6 +32,7 @@ MODELS_URL = f"{BASE_URL}/models"
 DOCS_COUNT_URL = f"{BASE_URL}/documents/count"
 DOCS_UPLOAD_URL = f"{BASE_URL}/documents/upload"
 TASKS_URL = f"{BASE_URL}/tasks"
+RUNTIME_URL = f"{BASE_URL}/runtime"
 
 SUGGESTIONS = {
     "Explain an idea": "Explain how retrieval-augmented generation works, simply.",
@@ -80,6 +81,20 @@ def fetch_doc_count() -> int | None:
         r = httpx.get(DOCS_COUNT_URL, timeout=5)
         r.raise_for_status()
         return int(r.json().get("count", 0))
+    except Exception:
+        return None
+
+
+def fetch_runtime() -> dict | None:
+    """Fetch the /runtime snapshot once on demand (never polled in a loop).
+
+    Not cached by ``st.cache_data`` because the user refreshes it manually
+    via the sidebar button — we don't want a TTL hiding a changed status.
+    """
+    try:
+        r = httpx.get(RUNTIME_URL, timeout=8)
+        r.raise_for_status()
+        return r.json()
     except Exception:
         return None
 
@@ -340,6 +355,64 @@ with st.sidebar:
             st.caption("Not configured (no API key)")
     else:
         st.caption("Could not load model info")
+
+    st.subheader("GPU Runtime", divider=False)
+    if "runtime_snap" not in st.session_state:
+        st.session_state.runtime_snap = None
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        if st.button("Refresh", icon=":material/refresh:", help="Re-check Ollama and GPU status"):
+            st.session_state.runtime_snap = fetch_runtime()
+    with col1:
+        if st.session_state.runtime_snap is None:
+            st.session_state.runtime_snap = fetch_runtime()
+    snap = st.session_state.runtime_snap
+    if snap:
+        if snap.get("ollama_reachable"):
+            st.badge("Ollama online", icon=":material/check_circle:", color="green")
+        else:
+            st.badge("Ollama offline", icon=":material/error:", color="red")
+        loaded = snap.get("model") or "(none)"
+        st.caption(f"Loaded model: `{loaded}`")
+        proc = snap.get("processor", "Unknown")
+        proc_color = {
+            "100% GPU": "green",
+            "Partial CPU/GPU": "orange",
+            "100% CPU": "red",
+        }.get(proc, "gray")
+        st.badge(proc, color=proc_color)
+        if snap.get("gpu_name"):
+            st.caption(f"GPU: {snap['gpu_name']}")
+        vram_total = snap.get("vram_total_mb")
+        vram_used = snap.get("vram_used_mb")
+        if vram_total is not None and vram_used is not None:
+            st.caption(f"VRAM: {vram_used} / {vram_total} MB")
+        ctx = snap.get("context", {})
+        st.caption(
+            f"Context: num_ctx={ctx.get('num_ctx')} | history<= {ctx.get('history_max_turns')} turns | "
+            f"budget={ctx.get('context_token_budget')}"
+        )
+        par = snap.get("parallel", {})
+        st.caption(
+            f"Parallel: num_parallel={par.get('num_parallel')} | max_loaded={par.get('max_loaded_models')}"
+        )
+        warns = snap.get("warnings") or []
+        for w in warns[:5]:
+            st.caption(f"Warning {w}")
+        recs = snap.get("recommendations") or []
+        for rec in recs:
+            if "partial" in rec.lower() or "larger than" in rec.lower():
+                st.warning(rec, icon=":material/warning:")
+            elif "100% CPU" in rec or "No GPU offload" in rec:
+                st.warning(rec, icon=":material/memory:")
+            else:
+                st.info(rec, icon=":material/lightbulb:")
+        st.caption(
+            "Tip: This optimization does **not** change your model. Models larger than dedicated "
+            "VRAM may still need CPU/RAM. Run `ollama ps` and `nvidia-smi` to verify the split."
+        )
+    else:
+        st.caption("Runtime diagnostics unavailable (backend /runtime not reachable).")
 
     st.subheader("RAG store", divider=False)
     count = fetch_doc_count()
