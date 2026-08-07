@@ -88,6 +88,118 @@ embedding model, and upserted into Chroma by deterministic ID, so this is
 safe to run repeatedly. The same ingestion is available over HTTP via
 `POST /documents/upload`.
 
+## GPU / Ollama runtime optimization
+
+This section describes how Jarvis tunes the **local Ollama runtime to maximise
+GPU VRAM usage and minimise unnecessary CPU / system-RAM usage** — **without
+changing, quantizing, downgrading, renaming, or replacing your current model.**
+
+### What it does
+
+- Passes request-level options (`num_ctx`, `num_batch`, `keep_alive`,
+  `temperature`) to every local `ChatOllama` call from settings.
+- Leaves **GPU offload to Ollama** — never hard-codes `num_gpu`. Ollama picks
+  the maximum valid GPU offload automatically.
+- Builds all model clients **lazily** (no models load at import/startup; at
+  most one local generation model is active per request).
+- **Bounded context**: history is capped by `HISTORY_MAX_TURNS` +
+  `CONTEXT_TOKEN_BUDGET`; retrieved RAG content is capped by
+  `RAG_CONTEXT_TOKEN_CAP`; selected-text snippets are capped by
+  `SELECTED_TEXT_TOKEN_CAP`; older turns are truncated first; the system +
+  current user message are always preserved.
+- **Single-model loading**: `OLLAMA_NUM_PARALLEL=1` and
+  `OLLAMA_MAX_LOADED_MODELS=1` keep one local generation model in VRAM.
+
+### This does NOT change the model
+
+This optimization is **runtime-only**. It does not:
+
+- create, rename, delete, or quantize any model,
+- pull a new model,
+- modify model weights,
+- change which model is selected for a task (`select_model` is untouched).
+
+### Dedicated VRAM vs system RAM
+
+- **Dedicated VRAM** (GPU memory, e.g. 8 / 12 / 24 GB on the GPU) is where the
+  model weights + KV cache live for GPU-only execution.
+- **System RAM** is fallback memory used when the model doesn't fully fit in
+  VRAM — the CPU then runs some layers, which is slower.
+- A model **larger than available dedicated VRAM** may still require CPU/RAM
+  (partial offload). Jarvis reports this honestly via `GET /runtime` and the
+  Streamlit "GPU Runtime" sidebar, and recommends keeping a single model loaded
+  when that happens.
+
+### Verification commands (Windows PowerShell)
+
+```powershell
+# Is Ollama reachable + which model is currently loaded (PROCESSOR column)?
+ollama ps
+
+# GPU + VRAM usage in real time
+nvidia-smi
+
+# Jarvis runtime diagnostics endpoint
+uv run uvicorn jarvis.api.main:app --reload --app-dir src
+# in another window:
+curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/runtime
+
+# Startup validation (reachable + model exists + test chat + GPU avail)
+uv run jarvis-validate-runtime
+```
+
+### Interpreting the processor split
+
+`GET /runtime`'s `processor` field (and `ollama ps`'s PROCESSOR column) reports
+one of:
+
+| Value | Meaning |
+|---|---|
+| `100% GPU` | Model fully fits in dedicated VRAM — all layers on GPU. Best speed. |
+| `Partial CPU/GPU` | Some layers on GPU, some on CPU. Slower; **the model is larger than available dedicated VRAM or the context allocation is too large.** The app uses the maximum available GPU offload; complete GPU-only execution is not possible without more VRAM or a smaller model. |
+| `100% CPU` | No GPU offload at all. Slowest. Check `nvidia-smi` and that Ollama can see the GPU. |
+| `Unknown` | Ollama unreachable / no model loaded / `nvidia-smi` missing. The app still runs. |
+
+### How to change context size safely
+
+Edit `.env`:
+
+```
+OLLAMA_CONTEXT_LENGTH=4096      # conservative default
+```
+
+Raise it **only** if your model/context genuinely needs more and VRAM allows.
+Lowering it **frees KV cache memory** — useful when you see
+`Partial CPU/GPU`. After changing it, restart the backend (and Ollama if you
+also set the server-side `OLLAMA_*` env vars).
+
+### Restarting Ollama on Windows
+
+```powershell
+# stop
+Get-Process ollama -ErrorAction SilentlyContinue | Stop-Process -Force
+# start (desktop app path may differ)
+& "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe" serve
+# verify
+ollama ps
+```
+
+### How to roll back the optimization settings
+
+To disable all runtime tuning and revert to Ollama's server defaults, set in
+`.env`:
+
+```
+GPU_OPTIMIZATION_ENABLED=false
+```
+
+That makes `_runtime_options()` return an empty dict — no `num_ctx` /
+`num_batch` / `keep_alive` request overrides are sent. To fully roll back all
+of the runtime variables to their defaults, delete (or comment out) the
+`--- GPU / Ollama runtime optimization ---` block from `.env`. None of these
+changes touched your model; no roll-back step reinstalls or re-pulls a model.
+
 ## Run tests
 
 ```bash
@@ -114,6 +226,16 @@ All settings live in `src/jarvis/config/settings.py` and are loaded from
 | `HISTORY_MAX_TURNS` | `20` | Max (user, assistant) turns kept in the prompt |
 | `CONTEXT_TOKEN_BUDGET` | `12000` | Word-count-proxy budget for history truncation |
 | `RETRIEVAL_TOP_K` | `5` | Default RAG chunk count |
+| `RAG_CONTEXT_TOKEN_CAP` | `2048` | Max tokens (word proxy) for retrieved RAG context block |
+| `SELECTED_TEXT_TOKEN_CAP` | `1024` | Max tokens for highlighted selected-text snippet |
+| `GPU_OPTIMIZATION_ENABLED` | `true` | Master switch for request-level Ollama runtime options |
+| `OLLAMA_CONTEXT_LENGTH` | `4096` | `num_ctx` sent per request (conservative) |
+| `OLLAMA_NUM_BATCH` | `512` | `num_batch` prompt processing batch size |
+| `OLLAMA_FLASH_ATTENTION` | `1` | Request flash attention (requires Ollama >= 0.5) |
+| `OLLAMA_KV_CACHE_TYPE` | `q8_0` | KV cache quantization (q8_0 halves KV memory) |
+| `OLLAMA_KEEP_ALIVE` | `5m` | How long a model stays loaded in VRAM after last request |
+| `OLLAMA_NUM_PARALLEL` | `1` | Server-side: max concurrent requests Ollama serves |
+| `OLLAMA_MAX_LOADED_MODELS` | `1` | Server-side: max models loaded simultaneously |
 | `WORKSPACE_DIR` | `./workspace` | Root that write/edit/shell coding tools are confined to |
 | `SHELL_ALLOWED_COMMANDS` | `pwd,ls,cat,...` | Allowlist prefix for `run_shell` |
 | `TOOL_SUBPROCESS_TIMEOUT` | `60` | Seconds before a shell subprocess is killed |

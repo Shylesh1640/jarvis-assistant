@@ -13,7 +13,7 @@ def test_runtime_options_include_num_ctx_when_enabled(monkeypatch):
     monkeypatch.setattr(settings, "gpu_optimization_enabled", True)
     monkeypatch.setattr(settings, "ollama_context_length", 8192)
     monkeypatch.setattr(settings, "ollama_keep_alive", "10m")
-    from jarvis.models.ollama_client import _build, _runtime_options
+    from jarvis.models.ollama_client import _build
 
     llm = _build("qwen3:8b", 0.4)
     assert llm.model == "qwen3:8b"

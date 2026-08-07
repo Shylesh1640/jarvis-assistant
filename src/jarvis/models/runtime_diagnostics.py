@@ -157,16 +157,15 @@ def _parse_ollama_ps(stdout: str) -> list[dict]:
             return rows  # can't parse
         cols[col] = idx
     for ln in lines[header_idx + 1:]:
+        if len(ln) < cols["STATUS"]:
+            continue
         # Each field spans from its column start to the next column start.
         name = ln[cols["NAME"]:cols["ID"]].strip()
         model_id = ln[cols["ID"]:cols["SIZE"]].strip()
         size = ln[cols["SIZE"]:cols["PROCESSOR"]].strip()
-        # PROCESSOR spans until STATUS column, but the row may be shorter
-        # than the STATUS column, so we clamp.
-        end = min(cols["STATUS"], len(ln))
-        processor = ln[cols["PROCESSOR"]:end].strip()
-        status = ln[cols["STATUS"]:].strip() if cols["STATUS"] < len(ln) else ""
-        if not name:
+        processor = ln[cols["PROCESSOR"]:cols["STATUS"]].strip()
+        status = ln[cols["STATUS"]:].strip()
+        if not name or not model_id:
             continue
         rows.append({
             "name": name,

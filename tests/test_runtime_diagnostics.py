@@ -5,16 +5,12 @@ running Ollama server.
 """
 from __future__ import annotations
 
-import io
-from unittest.mock import patch
 
 import httpx
-import pytest
 
 from jarvis.models.runtime_diagnostics import (
     classify_processor,
     get_ollama_running_models,
-    get_ollama_process_info,
     get_gpu_info,
     get_runtime_snapshot,
 )
@@ -75,13 +71,9 @@ def test_running_models_too_many_warns(monkeypatch):
 
 
 def test_ollama_unreachable_returns_false():
-    def boom(*a, **k):
-        raise httpx.ConnectError("boom")
     import jarvis.models.runtime_diagnostics as rd
 
-    orig = rd.check_ollama_reachable
-    import io
-    res, warns = rd.check_ollama_reachable(base_url="http://127.0.0.1:1")  # fast fail
+    res, warns = rd.check_ollama_reachable(base_url="http://127.0.0.1:1")
     assert res is False
     assert isinstance(warns, list)
 
@@ -233,8 +225,8 @@ def test_snapshot_partial_offload_recommendation(monkeypatch):
     ))
     monkeypatch.setattr(rd, "get_gpu_info", lambda: ({"gpu_name": "X", "vram_total_mb": 8000, "vram_used_mb": 4000}, []))
     snap = get_runtime_snapshot()
-    assert any("Partial CPU/GPU" in r for r in snap["recommendations"])
     assert snap["processor"] == "Partial CPU/GPU"
+    assert any("larger than available dedicated VRAM" in r for r in snap["recommendations"])
 
 
 def test_snapshot_multiple_models_recommendation(monkeypatch):
