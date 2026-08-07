@@ -134,38 +134,40 @@ _PS_HEADER = re.compile(r"NAME\s+ID\s+SIZE\s+PROCESSOR\s+STATUS", re.IGNORECASE)
 
 
 def _parse_ollama_ps(stdout: str) -> list[dict]:
-    """Parse `ollama ps` output rows into structured dicts."""
+    """Parse `ollama ps` output rows into structured dicts.
+
+    Uses column offsets from the header line so multi-word values (SIZE =
+    "5.2 GB", PROCESSOR = "40%/60% CPU/GPU") are split correctly.
+    """
     lines = [ln for ln in stdout.splitlines() if ln.strip()]
     rows: list[dict] = []
     if not lines:
         return rows
-    # Find header index
     header_idx = 0
     for i, ln in enumerate(lines):
         if _PS_HEADER.search(ln):
             header_idx = i
             break
+    header = lines[header_idx]
+    # Find column start indices for NAME, ID, SIZE, PROCESSOR, STATUS.
+    cols = {}
+    for col in ("NAME", "ID", "SIZE", "PROCESSOR", "STATUS"):
+        idx = header.upper().find(col)
+        if idx == -1:
+            return rows  # can't parse
+        cols[col] = idx
     for ln in lines[header_idx + 1:]:
-        parts = ln.split()
-        if len(parts) < 5:
+        # Each field spans from its column start to the next column start.
+        name = ln[cols["NAME"]:cols["ID"]].strip()
+        model_id = ln[cols["ID"]:cols["SIZE"]].strip()
+        size = ln[cols["SIZE"]:cols["PROCESSOR"]].strip()
+        # PROCESSOR spans until STATUS column, but the row may be shorter
+        # than the STATUS column, so we clamp.
+        end = min(cols["STATUS"], len(ln))
+        processor = ln[cols["PROCESSOR"]:end].strip()
+        status = ln[cols["STATUS"]:].strip() if cols["STATUS"] < len(ln) else ""
+        if not name:
             continue
-        # NAME ID SIZE PROCESSOR... STATUS...  (PROCESSOR may contain spaces,
-        # e.g. "100% GPU" or "40%/60% CPU/GPU"). We rejoin the middle tokens.
-        name, model_id, size = parts[0], parts[1], parts[2]
-        rest = parts[3:]
-        # STATUS is the last token group that looks like a known status word.
-        status_known = {"loaded", "running", "stopping", "loading"}
-        status = ""
-        processor_tokens: list[str] = []
-        # Heuristic: processor tokens are everything until we hit a status word.
-        j = 0
-        while j < len(rest) and rest[j].lower() not in status_known:
-            processor_tokens.append(rest[j])
-            j += 1
-        if j < len(rest):
-            status = rest[j].lower()
-            # Anything left beyond status we ignore.
-        processor = " ".join(processor_tokens) if processor_tokens else rest[0] if rest else ""
         rows.append({
             "name": name,
             "size": size,

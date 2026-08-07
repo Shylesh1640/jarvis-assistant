@@ -128,10 +128,10 @@ def test_parse_ollama_ps_invalid_lines_skipped():
 
 
 def _call_parser(stdout: str):
+    """Parse `ollama ps` stdout directly via the module-level parser."""
     import jarvis.models.runtime_diagnostics as rd
 
-    with patch.object(rd, "get_ollama_process_info", lambda: (rd._parse_ollama_ps(stdout), [])):
-        return rd._parse_ollama_ps(stdout), []
+    return rd._parse_ollama_ps(stdout), []
 
 
 # ---------------------------------------------------------------------------
@@ -228,9 +228,13 @@ def test_snapshot_partial_offload_recommendation(monkeypatch):
     import jarvis.models.runtime_diagnostics as rd
     monkeypatch.setattr(rd, "check_ollama_reachable", lambda base_url=None: (True, []))
     monkeypatch.setattr(rd, "get_ollama_running_models", lambda base_url=None: ([], []))
+    monkeypatch.setattr(rd, "get_ollama_process_info", lambda: (
+        [{"name": "qwen3:8b", "size": "5.2 GB", "processor": "40%/60% CPU/GPU", "status": "loaded"}], []
+    ))
     monkeypatch.setattr(rd, "get_gpu_info", lambda: ({"gpu_name": "X", "vram_total_mb": 8000, "vram_used_mb": 4000}, []))
     snap = get_runtime_snapshot()
-    assert "Partial CPU/GPU" in snap["recommendations"]
+    assert any("Partial CPU/GPU" in r for r in snap["recommendations"])
+    assert snap["processor"] == "Partial CPU/GPU"
 
 
 def test_snapshot_multiple_models_recommendation(monkeypatch):
