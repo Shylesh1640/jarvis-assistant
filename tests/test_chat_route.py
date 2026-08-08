@@ -31,7 +31,7 @@ class _StubGraph:
     def __init__(self) -> None:
         self.invoke_handler = _default_invoke
 
-    def invoke(self, state):
+    def invoke(self, state, **kwargs):
         return self.invoke_handler(state)
 
 

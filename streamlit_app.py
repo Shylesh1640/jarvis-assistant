@@ -166,16 +166,21 @@ def poll_task(task_id: str, timeout: float = 295.0, interval: float = 2.0) -> di
 # Session state init
 # ---------------------------------------------------------------------------
 
-st.session_state.setdefault("messages", [])
-st.session_state.setdefault("pending_action", None)
-st.session_state.setdefault("pending_selection", "")
-st.session_state.setdefault("selection_target_index", None)
-st.session_state.setdefault("toggles", {
-    "show_reasoning": False,
-    "answer_style": "default",
-    "background_task": False,
-    "debug": False,
-})
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "pending_action" not in st.session_state:
+    st.session_state.pending_action = None
+if "pending_selection" not in st.session_state:
+    st.session_state.pending_selection = ""
+if "selection_target_index" not in st.session_state:
+    st.session_state.selection_target_index = None
+if "toggles" not in st.session_state:
+    st.session_state.toggles = {
+        "show_reasoning": False,
+        "answer_style": "default",
+        "background_task": False,
+        "debug": False,
+    }
 
 
 def _clear_selection() -> None:
