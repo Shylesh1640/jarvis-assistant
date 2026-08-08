@@ -2,6 +2,7 @@
 import logging
 
 from langchain_core.messages import ToolMessage
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
 
@@ -15,6 +16,8 @@ from jarvis.orchestration.context_node import build_context
 from jarvis.orchestration.router_node import classify_intent
 from jarvis.orchestration.state import JarvisState
 from jarvis.tools.coding.file_ops import read_file
+from jarvis.tools.coding.git_diff import git_diff
+from jarvis.tools.coding.list_directory import list_directory
 from jarvis.tools.coding.shell import run_shell
 from jarvis.tools.coding.write_ops import edit_file, write_file
 from jarvis.tools.general.calculator import calculator
@@ -24,7 +27,7 @@ from jarvis.tools.general.search_code import search_code
 logger = logging.getLogger(__name__)
 
 _GENERAL_TOOLS = [calculator, rag_search, search_code, read_file, write_file, edit_file, run_shell]
-_CODING_TOOLS = [read_file, search_code, write_file, edit_file, run_shell]
+_CODING_TOOLS = [read_file, search_code, list_directory, git_diff, write_file, edit_file, run_shell]
 
 
 def route_decision(state: JarvisState) -> str:
@@ -110,8 +113,8 @@ def build_graph():
     graph.add_edge("coding_branch", END)
     graph.add_edge("complex_branch", END)
 
-    logger.info("Graph built with approval nodes + tool recorder")
-    return graph.compile()
+    logger.info("Graph built with approval nodes + tool recorder + checkpointer")
+    return graph.compile(checkpointer=InMemorySaver())
 
 
 jarvis_graph = build_graph()

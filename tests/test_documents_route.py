@@ -71,6 +71,44 @@ def test_upload_rejects_oversized(client, monkeypatch):
     assert r.status_code == 413
 
 
+def test_upload_rejects_non_utf8_text(client):
+    files = [("files", ("bad.txt", b"\xff\xfe\x00\x01", "text/plain"))]
+    r = client.post("/documents/upload", files=files)
+    assert r.status_code == 422
+
+
+def test_upload_pdf_routes_to_ingest_file(client, monkeypatch):
+    import jarvis.api.routes.documents as docs_mod
+
+    added: list = []
+
+    def fake_ingest_file(path, *, metadata=None):
+        added.append((path, metadata))
+        return ["pdf-chunk-1"]
+
+    monkeypatch.setattr(docs_mod, "ingest_file", fake_ingest_file)
+    files = [("files", ("doc.pdf", b"%PDF-1.4 fake-body", "application/pdf"))]
+    r = client.post("/documents/upload", files=files)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["files"] == ["doc.pdf"]
+    assert data["ids"] == ["pdf-chunk-1"]
+    # binary path was used (temp file + metadata)
+    assert added and added[0][1]["source"] == "doc.pdf"
+
+
+def test_upload_pdf_unreadable_returns_500(client, monkeypatch):
+    import jarvis.api.routes.documents as docs_mod
+
+    def fail_ingest(path, *, metadata=None):
+        raise RuntimeError("corrupt pdf")
+
+    monkeypatch.setattr(docs_mod, "ingest_file", fail_ingest)
+    files = [("files", ("broken.pdf", b"junk", "application/pdf"))]
+    r = client.post("/documents/upload", files=files)
+    assert r.status_code == 500
+
+
 def test_ingest_folder_scans(monkeypatch, client, tmp_path):
     target = tmp_path / "docs"
     target.mkdir()
@@ -78,20 +116,20 @@ def test_ingest_folder_scans(monkeypatch, client, tmp_path):
     (target / "b.md").write_text("beta", encoding="utf-8")
     (target / "ignore.bin").write_bytes(b"\x00")
 
-    ids: list = []
+    ingested_files: list = []
 
-    def _ingest(docs):
-        ids.extend([d.metadata["source"] for d in docs])
-        return [f"id-{i}" for i in range(len(docs))]
+    def _ingest_file(path, *, metadata=None):
+        ingested_files.append(str(path))
+        return [f"id-{len(ingested_files)}"]
 
-    monkeypatch.setattr("jarvis.api.routes.documents.ingest_documents", _ingest)
+    monkeypatch.setattr("jarvis.api.routes.documents.ingest_file", _ingest_file)
     r = client.post("/documents/ingest-folder", params={"folder": str(target)})
     assert r.status_code == 200
     data = r.json()
     assert data["files"] == 2
-    assert set(data["ids"]) == {"id-0", "id-1"}
+    assert len(data["ids"]) == 2
     # .bin skipped
-    assert all(not s.endswith(".bin") for s in ids)
+    assert all(".bin" not in f for f in ingested_files)
 
 
 def test_ingest_folder_missing_returns_404(client):

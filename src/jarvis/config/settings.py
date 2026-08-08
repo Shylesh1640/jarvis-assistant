@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     context_token_budget: int = 12000
     # Default number of chunks retrieved from the RAG store.
     retrieval_top_k: int = 5
+    # Weight (0..1) for the keyword-BM25 layer in hybrid retrieval. 0 = pure
+    # vector similarity; 1 = pure keyword. 0.25 keeps semantic primacy but
+    # boosts chunks with exact-term matches.
+    rerank_keyword_weight: float = 0.25
     # Hard cap (tokens, same word-count proxy) applied to the *retrieved RAG
     # context block* before it is injected into the prompt, so a large hit
     # cannot blow the model context window. 0 = unbounded (legacy).
@@ -106,6 +110,16 @@ class Settings(BaseSettings):
     ollama_num_parallel: int = 1
     # Maximum models Ollama keeps loaded simultaneously (server-side env var).
     ollama_max_loaded_models: int = 1
+
+    # Updated file watcher: when True, the CLI ``jarvis-ingest`` command and
+    # the /documents/ingest-folder endpoint both shortcut to "full re-ingest"
+    # semantics. A future incremental watcher can key off this flag.
+    # When True, a lightweight file watcher can run in the background and
+    # re-chunk changed files into Chroma. Off by default to avoid I/O on
+    # machines where the RAG store is static.
+    auto_reindex_enabled: bool = False
+    # Polling interval (seconds) for the background file watcher when enabled.
+    auto_reindex_interval: int = 300
 
     @property
     def complex_models(self) -> list[str]:

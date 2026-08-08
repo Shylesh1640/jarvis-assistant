@@ -26,6 +26,14 @@ _MEDIUM_RISK_TOOLS = {
     "subprocess_run",
 }
 
+_LOW_RISK_TOOLS = {
+    "search_code",
+    "list_directory",
+    "git_diff",
+    "calculator",
+    "rag_search",
+}
+
 _HIGH_RISK_ARGS = {
     "sudo",
     "rm -rf",

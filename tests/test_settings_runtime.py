@@ -76,3 +76,9 @@ def test_filter_supported_options_keeps_known_set():
     for k in ("num_ctx", "num_batch", "temperature", "keep_alive",
               "flash_attention", "kv_cache_type", "num_predict"):
         assert _filter_supported_options({k: 1}) == {k: 1}
+
+
+def test_auto_reindex_defaults_are_off():
+    s = Settings()
+    assert s.auto_reindex_enabled is False
+    assert s.auto_reindex_interval == 300

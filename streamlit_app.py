@@ -41,7 +41,7 @@ SUGGESTIONS = {
     "Search the code": "Search the workspace for 'TODO' comments.",
 }
 
-ANSWER_STYLES = ["default", "concise", "detailed", "code"]
+ANSWER_STYLES = ["default", "concise", "detailed", "code", "teaching", "architecture"]
 
 st.set_page_config(
     page_title="Jarvis Assistant",
@@ -97,6 +97,28 @@ def fetch_runtime() -> dict | None:
         return r.json()
     except Exception:
         return None
+
+
+def export_conversation_to_markdown(messages: list[dict]) -> str:
+    """Serialise the conversation to a Markdown string."""
+    lines = ["# Jarvis Conversation Export\n"]
+    for m in messages:
+        role = m.get("role", "user")
+        content = m.get("content", "")
+        heading = "User" if role == "user" else "Assistant"
+        lines.append(f"## {heading}\n")
+        lines.append(f"{content}\n")
+        if role == "assistant":
+            meta_parts = []
+            if m.get("path"):
+                meta_parts.append(f"path: `{m['path']}`")
+            if m.get("model"):
+                meta_parts.append(f"model: `{m['model']}`")
+            if m.get("tools_used"):
+                meta_parts.append(f"tools: {', '.join(m['tools_used'])}")
+            if meta_parts:
+                lines.append(f"> {' | '.join(meta_parts)}\n")
+    return "\n".join(lines)
 
 
 def upload_documents(files) -> dict | None:
@@ -176,7 +198,7 @@ def _assistant_record(answer: str, data: dict) -> dict:
 
 
 def _render_assistant_meta(rec: dict, *, debug: bool) -> None:
-    """Badges, tools line, citations, and an optional debug expander."""
+    """Badges, tools line, citations, copy-code helper, and debug expander."""
     path = rec.get("path", "unknown")
     path_color = {"general": "blue", "coding": "green", "complex": "violet"}.get(
         path, "gray"
@@ -188,7 +210,7 @@ def _render_assistant_meta(rec: dict, *, debug: bool) -> None:
 
     tools = rec.get("tools_used") or []
     if tools:
-        st.caption(f"Tools used: {', '.join(tools)}", icon=":material/build:")
+        st.caption(f":material/build: Tools used: {', '.join(tools)}")
 
     sources = rec.get("sources") or []
     if sources:
@@ -202,6 +224,12 @@ def _render_assistant_meta(rec: dict, *, debug: bool) -> None:
                 st.markdown(f"**{i}. {src}**{(' — ' + chunk) if chunk else ''}")
                 if doc:
                     st.caption(doc)
+
+    # Copy-code button for the assistant's reply content.
+    content = rec.get("content", "")
+    if content:
+        with st.popover("Copy answer", icon=":material/content_copy:"):
+            st.code(content, language="markdown")
 
     if debug:
         ctx = rec.get("retrieved_context") or ""
@@ -224,7 +252,7 @@ def _send_message(
         preview = (
             selected_text if len(selected_text) <= 120 else selected_text[:117] + "..."
         )
-        display_user = f"_About this selection:_\n\n> {preview}\n\n{text}"
+        display_user = f"### Selected text\n\n> {preview}\n\n### Question about selection\n\n{text}"
 
     if text:
         st.session_state.messages.append({"role": "user", "content": display_user})
@@ -458,6 +486,17 @@ with st.sidebar:
         st.session_state.selection_target_index = None
         st.rerun()
 
+    if st.session_state.messages:
+        md = export_conversation_to_markdown(st.session_state.messages)
+        if st.download_button(
+            "Export conversation (.md)",
+            data=md.encode("utf-8"),
+            file_name="jarvis_conversation.md",
+            mime="text/markdown",
+            icon=":material/download:",
+        ):
+            st.toast("Conversation exported.", icon=":material/download:")
+
 # ---------------------------------------------------------------------------
 # Conversation header + toggle toolbar
 # ---------------------------------------------------------------------------
@@ -523,6 +562,20 @@ for idx, msg in enumerate(st.session_state.messages):
         st.markdown(msg["content"])
         if msg["role"] == "assistant" and msg.get("path"):
             _render_assistant_meta(msg, debug=tg["debug"])
+
+# Retry button: re-send the last user message (drops the last assistant reply).
+if (
+    len(st.session_state.messages) >= 2
+    and st.session_state.messages[-1]["role"] == "assistant"
+    and not st.session_state.pending_action
+    and not st.session_state.pending_selection
+    and st.button("Retry last message", icon=":material/refresh:")
+):
+    last_user_idx = len(st.session_state.messages) - 2
+    last_user_text = st.session_state.messages[last_user_idx]["content"]
+    st.session_state.messages = st.session_state.messages[:last_user_idx]
+    _send_message(last_user_text)
+    st.rerun()
 
 # ---------------------------------------------------------------------------
 # Selection panel under the latest assistant message

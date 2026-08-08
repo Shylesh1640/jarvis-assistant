@@ -373,6 +373,29 @@ def _system_ram_used_mb() -> int | None:
         return None
 
 
+def estimate_adaptive_context_length(
+    vram_total_mb: int | None,
+    *,
+    base: int = 4096,
+    per_mb_token: float = 4.0,
+    max_ctx: int = 32768,
+) -> int:
+    """Estimate a safe ``num_ctx`` from available VRAM.
+
+    Heuristic: KV cache scales roughly with context length. Each token of
+    KV occupies ~0.25 MB for a 7B model at q8_0, so 1 MB of VRAM ~ 4 tokens
+    of context headroom. We never go below ``base`` (4096) and cap at
+    ``max_ctx`` (32768) so we don't oversubscribe. When VRAM is unknown,
+    return the conservative base.
+    """
+    if vram_total_mb is None or vram_total_mb <= 0:
+        return base
+    # Reserve ~60 % of VRAM for weights, use the rest as KV headroom.
+    kv_budget_mb = vram_total_mb * 0.4
+    estimated = int(kv_budget_mb * per_mb_token)
+    return max(base, min(estimated, max_ctx))
+
+
 __all__ = [
     "check_ollama_reachable",
     "get_ollama_running_models",
@@ -381,4 +404,5 @@ __all__ = [
     "get_runtime_snapshot",
     "classify_processor",
     "get_ollama_version",
+    "estimate_adaptive_context_length",
 ]

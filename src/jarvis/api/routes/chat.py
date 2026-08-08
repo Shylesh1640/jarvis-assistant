@@ -43,6 +43,16 @@ _db_ready = False
 _db_lock = _threading.Lock()
 
 
+def _thread_id(session_id: str) -> str:
+    """Stable LangGraph thread id per session so the checkpointer can group runs.
+
+    Sessions can be supplied by clients (Streamlit generates a uuid4), so we
+    namespace them to avoid accidental collisions with other apps sharing the
+    same in-memory checkpointer.
+    """
+    return f"jarvis-session:{session_id}"
+
+
 def _ensure_db() -> None:
     """Create tables on first use. Failures fall back to in-memory mode."""
     global _db_ready
@@ -121,7 +131,10 @@ def chat(payload: ChatRequest) -> ChatResponse:
             )
         trace_event(tr, "approval_resume")
         prev_state["approved"] = True
-        result = jarvis_graph.invoke(prev_state)
+        result = jarvis_graph.invoke(
+            prev_state,
+            config={"configurable": {"thread_id": _thread_id(payload.session_id)}},
+        )
         _update_history(payload.session_id, prev_state.get("user_input", ""), result)
         finish_trace(tr, result=result)
         return _build_response(payload.session_id, result)
@@ -163,7 +176,10 @@ def chat(payload: ChatRequest) -> ChatResponse:
         )
 
     try:
-        result = jarvis_graph.invoke(initial_state)
+        result = jarvis_graph.invoke(
+            initial_state,
+            config={"configurable": {"thread_id": _thread_id(payload.session_id)}},
+        )
     except OllamaUnavailableError as exc:
         trace_event(tr, "error", category="ollama_unavailable")
         finish_trace(tr)

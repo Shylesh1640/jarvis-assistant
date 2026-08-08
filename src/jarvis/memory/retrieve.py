@@ -1,8 +1,36 @@
-"""Functions to query Chroma and return a context string."""
+"""Functions to query Chroma and return a context string.
 
+Hybrid retrieval:
+- *Vector* similarity (Chroma cosine) forms the base ranking.
+- *Keyword* scoring (BM25-style overlap) reranks the top-K chunks so
+  chunks mentioning the exact query terms get a boost on top of semantic
+  similarity. The final order is a convex combination of the two scores.
+
+Reranking happens entirely in-process (no external reranker model) so it
+adds zero latency and zero extra deps. The weight can be tuned via
+``settings.rerank_keyword_weight`` (0 = pure vector, 1 = pure keyword).
+"""
 from __future__ import annotations
 
+import math
+from collections import Counter
+from enum import Enum
+
+from jarvis.config.settings import settings
 from jarvis.memory.store import get_collection, get_embedding_function
+
+
+class Collection(str, Enum):
+    """Logical collection partitions within the single physical Chroma collection.
+
+    Stored in chunk metadata under the ``kind`` key so a query can filter
+    to one partition (docs / memory / code / conversations) or query all.
+    """
+
+    DOCS = "docs"
+    MEMORY = "memory"
+    CODE = "code"
+    CONVERSATIONS = "conversations"
 
 
 def query_context(
@@ -11,6 +39,7 @@ def query_context(
     score_threshold: float | None = None,
     *,
     with_sources: bool = False,
+    collection: Collection | None = None,
 ) -> str | tuple[str, list[dict[str, str]]]:
     """Embed *query*, search Chroma, and return a formatted context block.
 
@@ -26,6 +55,9 @@ def query_context(
     with_sources:
         When True, return ``(context_block, sources)`` where ``sources`` is
         a list of ``{"source", "chunk_id", "doc"}`` dicts for UI citations.
+    collection:
+        Restrict to a logical partition (docs/memory/code/conversations).
+        When None, queries all partitions.
 
     Returns
     -------
@@ -34,13 +66,18 @@ def query_context(
     the return is a (string, list) tuple.
     """
     emb_fn = get_embedding_function()
-    collection = get_collection()
+    col = get_collection()
 
     query_embedding = emb_fn.embed_query(query)
 
-    results = collection.query(
+    # Over-fetch by 2x so the reranker still has candidates after filtering.
+    fetch_k = max(k * 2, k)
+    where = {"kind": collection.value} if collection else None
+
+    results = col.query(
         query_embeddings=[query_embedding],
-        n_results=k,
+        n_results=fetch_k,
+        where=where,
         include=["documents", "metadatas", "distances"],
     )
 
@@ -53,16 +90,19 @@ def query_context(
 
     gathered: list[str] = []
     sources: list[dict[str, str]] = []
-    for i, doc in enumerate(documents):
-        dist = distances[i] if i < len(distances) else None
-        meta = metadatas[i] if i < len(metadatas) else {}
-        if score_threshold is not None and dist is not None:
-            if dist > score_threshold:
-                continue
+    reranked = _rerank(query, documents, distances, metadatas, score_threshold)
 
-        src = meta.get("source") or f"Doc {i + 1}"
-        chunk_id = meta.get("chunk_id") or ""
-        tag = f"[{src}]" if src else f"[Doc {i + 1}]"
+    for doc, meta in reranked[:k]:
+        src = (meta or {}).get("source") or "Doc"
+        chunk_id = (meta or {}).get("chunk_id") or ""
+        page = (meta or {}).get("page")
+        section = (meta or {}).get("section")
+        extra = ""
+        if page:
+            extra += f" (p.{page})"
+        if section:
+            extra += f" [{section}]"
+        tag = f"[{src}{extra}]" if extra else f"[{src}]"
         gathered.append(f"{tag} {doc}")
         sources.append({"source": src, "chunk_id": chunk_id, "doc": doc})
 
@@ -70,6 +110,113 @@ def query_context(
         return ("", []) if with_sources else ""
 
     return ("\n\n".join(gathered), sources) if with_sources else "\n\n".join(gathered)
+
+
+# ---------------------------------------------------------------------------
+# Keyword scoring / reranking
+# ---------------------------------------------------------------------------
+
+_STOPWORDS = {
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "in", "on", "at", "to", "for", "of", "and", "or", "not", "no",
+    "this", "that", "it", "as", "by", "with", "from", "so", "do", "does",
+}
+
+
+def _tokenize(text: str) -> list[str]:
+    """Lowercase, strip punctuation, drop stopwords."""
+    import re
+
+    tokens = re.findall(r"[a-zA-Z0-9_]+", text.lower())
+    return [t for t in tokens if t not in _STOPWORDS and len(t) > 1]
+
+
+def _bm25_scores(query: str, documents: list[str]) -> list[float]:
+    """Approximate BM25 scores for *query* across *documents*.
+
+    A compact implementation (k1=1.2, b=0.75) so reranking adds value without
+    pulling in a dependency.
+    """
+    k1 = 1.2
+    b = 0.75
+    tokenized_docs = [_tokenize(d) for d in documents]
+    N = len(tokenized_docs)
+    if N == 0:
+        return []
+
+    avgdl = sum(len(d) for d in tokenized_docs) / N or 1.0
+    dfs: Counter[str] = Counter()
+    for tokens in tokenized_docs:
+        for t in set(tokens):
+            dfs[t] += 1
+
+    idf = {}
+    for t, df in dfs.items():
+        idf[t] = math.log((N - df + 0.5) / (df + 0.5) + 1)
+
+    q_tokens = _tokenize(query)
+    scores: list[float] = []
+    for tokens in tokenized_docs:
+        tf: Counter[str] = Counter(tokens)
+        dl = len(tokens) or 1
+        score = 0.0
+        for t in q_tokens:
+            if t in tf and t in idf:
+                numerator = idf[t] * tf[t] * (k1 + 1)
+                denominator = tf[t] + k1 * (1 - b + b * dl / avgdl)
+                score += numerator / denominator
+        scores.append(score)
+    return scores
+
+
+def _rerank(
+    query: str,
+    documents: list[str],
+    distances: list[float],
+    metadatas: list[dict],
+    score_threshold: float | None,
+) -> list[tuple[str, dict]]:
+    """Combine vector distance + BM25 keyword score to produce a reranked list.
+
+    Vector "score" = 1 - distance (cosine → similarity). Keyword score is the
+    BM25 value. We min-max-normalize each score to [0,1] and combine via
+    ``settings.rerank_keyword_weight``. Lower-weight = more vector, more
+    original semantic similarity wins.
+    """
+    if not documents:
+        return []
+
+    # Normalize vector distance → vector similarity score.
+    if distances:
+        max_d = max(distances) if max(distances) > 0 else 1.0
+        min_d = min(distances) if min(distances) >= 0 else 0.0
+        v_scores = [_norm(min_d, max_d, d) for d in distances]
+    else:
+        v_scores = [1.0] * len(documents)
+
+    kw_scores = _bm25_scores(query, documents)
+    if kw_scores:
+        max_kw = max(kw_scores) if max(kw_scores) > 0 else 1.0
+        kw_scores = [s / max_kw for s in kw_scores]
+    else:
+        kw_scores = [0.0] * len(documents)
+
+    kw_w = float(getattr(settings, "rerank_keyword_weight", 0.25))
+    kw_w = max(0.0, min(1.0, kw_w))
+    out: list[tuple[str, dict, float]] = []
+    for i, doc in enumerate(documents):
+        combined = (1 - kw_w) * v_scores[i] + kw_w * kw_scores[i]
+        if score_threshold is not None and distances[i] > score_threshold:
+            continue
+        out.append((doc, metadatas[i] if i < len(metadatas) else {}, combined))
+    out.sort(key=lambda t: t[2], reverse=True)
+    return [(d, m) for d, m, _ in out]
+
+
+def _norm(lo: float, hi: float, val: float) -> float:
+    if hi - lo < 1e-9:
+        return 1.0
+    return 1.0 - (val - lo) / (hi - lo)
 
 
 def has_documents() -> bool:

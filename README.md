@@ -22,7 +22,7 @@ uv run uvicorn jarvis.api.main:app --reload --app-dir src
 
 API endpoints: `GET /health`, `GET /models`, `GET /documents/count`,
 `POST /documents/upload`, `POST /documents/ingest-folder`, `POST /chat`,
-`POST /tasks`, `GET /tasks/{task_id}`.
+`POST /tasks`, `GET /tasks/{task_id}`, `GET /runtime`.
 
 ## Run frontend
 
@@ -31,16 +31,20 @@ uv run streamlit run streamlit_app.py
 ```
 
 The sidebar shows live backend health, the currently configured local and
-cloud models, and the current size of the RAG store. First-message
-suggestion pills help you get started. Each assistant reply is annotated
-with badges for the branch path and the model that produced it, plus the
-list of tools used and expandable citation / debug sections. After an
-assistant reply you can paste a snippet from it, then ask a follow-up
-question framed around that selection. Tool actions flagged medium/high
-risk surface an inline Approve / Deny card before execution. Long-running
-questions can be dispatched as background tasks (`Background` toggle),
-which the UI submits to `POST /tasks` and polls to `GET /tasks/{id}`. The
-UI uses a dark theme configured in `.streamlit/config.toml`.
+cloud models, the current size of the RAG store, a GPU runtime panel, and an
+"Export conversation (.md)" download button. First-message suggestion pills
+help you get started. Each assistant reply is annotated with badges for the
+branch path and the model that produced it, plus the list of tools used,
+expandable citation / debug sections, and a "Copy answer" popover. After an
+assistant reply you can paste a snippet from it, then ask a follow-up question
+framed around that selection, or hit "Retry last message". The toolbar
+exposes "Show reasoning", an answer style (default / concise / detailed /
+code / teaching / architecture), "Run as background task", and "Show debug
+info" toggles. Tool actions flagged medium/high risk surface an inline
+Approve / Deny card before execution. Long-running questions can be
+dispatched as background tasks (`Background` toggle), which the UI submits
+to `POST /tasks` and polls to `GET /tasks/{id}`. The UI uses a dark theme
+configured in `.streamlit/config.toml`.
 
 ## Background tasks
 
@@ -58,17 +62,31 @@ DB. Tasks run with approvals auto-approved (there is no interactive user).
 
 ## Document upload
 
-`.txt` / `.md` files can be uploaded over HTTP (chunked, embedded, and
-upserted into Chroma by deterministic ID; re-uploading the same file is a
-no-op):
+`.txt` / `.md` / `.pdf` / `.docx` files can be uploaded over HTTP. Text
+files are read as UTF-8; PDFs are extracted per-page (with `pypdf`) and
+DOCX via `docx2txt`, then chunked, embedded, and upserted into Chroma by
+deterministic ID (re-uploading the same file is a no-op). Binary files
+beyond 20 MB are rejected:
 
 ```bash
 curl -X POST localhost:8000/documents/upload -F 'files=@notes.txt'
+curl -X POST localhost:8000/documents/upload -F 'files=@manual.pdf'
 curl localhost:8000/documents/count
 curl -X POST localhost:8000/documents/ingest-folder -d 'folder=./data/docs'
 ```
 
 Folders can also be ingested from a mounted path for containers.
+
+## Retrieval (hybrid)
+
+RAG context is produced by *hybrid retrieval*: Chroma cosine-similarity
+vector search forms the base ranking, then an in-process BM25 keyword score
+reranks the top candidates so chunks mentioning the exact query terms are
+boosted. The blend is controlled by `RERANK_KEYWORD_WEIGHT` (0 = pure
+vector, 1 = pure keyword, default 0.25). Each chunk is tagged with a `kind`
+metadata field so queries can be restricted to a logical collection
+(`docs` / `memory` / `code` / `conversations`). PDF chunks carry
+`page` + `section` metadata that appears in citations as `(p.3) [page-3]`.
 
 ## Ingest documents into the RAG store
 
@@ -83,10 +101,10 @@ uv run python -m jarvis.cli.ingest --folder path/to/notes --ext txt --ext md
 uv run jarvis.cli.ingest --dry-run -v
 ```
 
-`.txt` / `.md` files are chunked, embedded with the configured Ollama
-embedding model, and upserted into Chroma by deterministic ID, so this is
-safe to run repeatedly. The same ingestion is available over HTTP via
-`POST /documents/upload`.
+`.txt` / `.md` / `.pdf` / `.docx` files are chunked, embedded with the
+configured Ollama embedding model, and upserted into Chroma by deterministic
+ID, so this is safe to run repeatedly. The same ingestion is available over
+HTTP via `POST /documents/upload`.
 
 ## GPU / Ollama runtime optimization
 
@@ -236,6 +254,9 @@ All settings live in `src/jarvis/config/settings.py` and are loaded from
 | `OLLAMA_KEEP_ALIVE` | `5m` | How long a model stays loaded in VRAM after last request |
 | `OLLAMA_NUM_PARALLEL` | `1` | Server-side: max concurrent requests Ollama serves |
 | `OLLAMA_MAX_LOADED_MODELS` | `1` | Server-side: max models loaded simultaneously |
+| `RERANK_KEYWORD_WEIGHT` | `0.25` | Hybrid retrieval keyword-vs-vector blend (0 = pure vector) |
+| `AUTO_REINDEX_ENABLED` | `false` | Off by default; enables incremental re-ingest semantics |
+| `AUTO_REINDEX_INTERVAL` | `300` | Polling interval (s) for a future background file watcher |
 | `WORKSPACE_DIR` | `./workspace` | Root that write/edit/shell coding tools are confined to |
 | `SHELL_ALLOWED_COMMANDS` | `pwd,ls,cat,...` | Allowlist prefix for `run_shell` |
 | `TOOL_SUBPROCESS_TIMEOUT` | `60` | Seconds before a shell subprocess is killed |
@@ -250,22 +271,22 @@ All settings live in `src/jarvis/config/settings.py` and are loaded from
 ```text
 src/jarvis/
 ├── api/                # FastAPI app, routes/, schemas/
-│   ├── main.py        # app + /health + /models
-│   └── routes/        # chat.py, documents.py, tasks.py
+│   ├── main.py        # app + /health + /models + /runtime
+│   └── routes/        # chat.py, documents.py, tasks.py, runtime.py
 ├── orchestration/     # LangGraph state, router, branches, graph, approval gate
-│   ├── graph.py       # compiled graph wiring all nodes together
+│   ├── graph.py       # compiled graph (InMemorySaver checkpointer) wiring nodes
 │   ├── state.py       # JarvisState TypedDict
 │   ├── router_node.py # intent classification (general/coding/complex)
-│   ├── branches.py    # run_general/coding/complex branch nodes
-│   ├── context_node.py, context_window.py  # RAG + sliding-window context
+│   ├── branches.py    # run_general/coding/complex branch nodes (typed errors)
+│   ├── context_node.py, context_window.py  # RAG + sliding-window context + caps
 │   ├── model_selector.py # picks model per intent × complexity
 │   └── approval_node.py # check_risk + approval_gate (human-in-the-loop)
-├── models/            # ollama_client.py, openrouter_client.py (fallback chain)
-├── tools/             # general (calculator/rag_search/search_code), coding (write/edit/shell/run_tests)
+├── models/            # ollama_client.py, openrouter_client.py, runtime_diagnostics.py
+├── tools/             # general + coding (write/edit/shell/run_tests/git_diff/list_directory)
 ├── persistence/       # SQLAlchemy engine, models, repos (Postgres SQLite)
-├── memory/            # ChromaDB store.py + retrieve.py + summaries.py
+├── memory/            # ChromaDB store.py (multi-format ingest) + retrieve.py (hybrid) + summaries.py
 ├── guardrails/        # input_guard, output_guard (PII), risk classification
-├── cli/               # ingest.py — `jarvis-ingest` CLI for the RAG store
+├── cli/               # ingest.py, validate_runtime.py (`jarvis-validate-runtime`)
 └── config/            # settings loaded from .env
 ```
 
@@ -292,11 +313,15 @@ classify_intent → build_context → route
   `approval_gate`; the API keeps the pending state in-memory and resumes on
   the next request with `approved=true`.
 - **Coding tools** (workspace-guarded): `write_file`, `edit_file`,
-  `run_shell`, `run_tests`, and `search_code` live in `tools/coding` and
-  `tools/general`. File writes are confined under `WORKSPACE_DIR`, `run_shell`
-  only allows commands from `SHELL_ALLOWED_COMMANDS`, and subprocesses time out
-  after `TOOL_SUBPROCESS_TIMEOUT` seconds. Write/exec tools are classified
-  medium/high risk so they go through approval.
+  `run_shell`, `run_tests`, `git_diff`, `list_directory`, and `search_code`
+  live in `tools/coding` and `tools/general`. File writes are confined under
+  `WORKSPACE_DIR`, `run_shell` only allows commands from
+  `SHELL_ALLOWED_COMMANDS`, and subprocesses time out after
+  `TOOL_SUBPROCESS_TIMEOUT` seconds. `git_diff` is read-only (flags
+  restricted to a safe allowlist; output capped at 8 KB) and
+  `list_directory` is read-only (max 200 entries; refuses paths that escape
+  the workspace) — both are low risk and need no approval. Write/exec tools
+  are classified medium/high risk so they go through approval.
 - **Complex branch** tries the configured OpenRouter model chain in order;
   if all fail it transparently degrades to the local general branch.
 - **Memory / summarization**: ChromaDB cosine collection seeded via the CLI
@@ -311,7 +336,11 @@ classify_intent → build_context → route
   completed/failed`.
 - **Context window**: conversation history is truncated to
   `HISTORY_MAX_TURNS` and a `CONTEXT_TOKEN_BUDGET` word-count proxy before
-  each LLM call.
+  each LLM call. Retrieved RAG context and selected text are capped at
+  `RAG_CONTEXT_TOKEN_CAP` / `SELECTED_TEXT_TOKEN_CAP`.
+- **Checkpointer**: the compiled graph runs with a LangGraph `InMemorySaver`
+  checkpointer, so interrupted runs can be resumed and tool-loop state is
+  preserved across requests in-process.
 
 ## Run with Docker (persistence)
 
@@ -334,11 +363,13 @@ uv run ruff check .
 ✅ **Phase 3 (orchestration graph)** — three branches (general / coding /
 complex) with conditional routing, tool-calling loop, and complex → general fallback
 ✅ **Tools** — calculator, RAG search, code search, `read_file`,
-workspace-scoped write/edit, allowlisted shell, and `run_tests` tools
-✅ **Memory / RAG** — ChromaDB store with recursive chunking, similarity
-search, `jarvis-ingest` CLI for `.txt` / `.md`, plus periodic conversation
-summarization
-✅ **Document upload** — HTTP `POST /documents/upload`,
+workspace-scoped write/edit, allowlisted shell, `run_tests`, plus read-only
+`git_diff` and `list_directory`
+✅ **Memory / RAG** — ChromaDB store with recursive chunking, hybrid
+retrieval (vector + BM25 rerank, per-collection `kind` filter), multi-format
+ingest (`.txt` / `.md` / `.pdf` / `.docx` with page/section metadata),
+`jarvis-ingest` CLI, plus periodic conversation summarization
+✅ **Document upload** — HTTP `POST /documents/upload` (text + PDF + DOCX),
 `GET /documents/count`, `POST /documents/ingest-folder`
 ✅ **Transparency** — responses carry `tools_used`, `sources`, and
 `retrieved_context`; the Streamlit UI renders badges, tool lists, and
@@ -349,5 +380,10 @@ in-process executor; UI toggle to run long prompts in the background
 Postgres (Docker) or a local SQLite fallback
 ✅ **Guardrails** — input validation, PII output redaction, tool risk
 classification + human-in-the-loop approval gate wired into the graph
-✅ **Streamlit UI** — chat, model-config sidebar, selected-text follow-ups,
-task offload, and Approve / Deny for risky tool actions
+✅ **Streamlit UI** — chat, model-config sidebar, GPU runtime panel,
+answer styles, selected-text follow-ups, "Retry last message",
+"Copy answer", conversation export (`.md`), task offload, and
+Approve / Deny for risky tool actions
+✅ **Resilience** — LangGraph `InMemorySaver` checkpointer for interrupted
+run recovery; typed Ollama errors surface as clean HTTP statuses
+(503 / 502 / 507 / 504)

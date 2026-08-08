@@ -42,6 +42,108 @@ def get_collection() -> chromadb.Collection:
     return _collection
 
 
+
+# ---------------------------------------------------------------------------
+# Multi-format document extraction (PDF, DOCX, TXT, MD)
+# ---------------------------------------------------------------------------
+
+def extract_text_from_file(path) -> tuple[str, list[dict]]:
+    """Extract text + page-section metadata from a file on disk.
+
+    Returns ``(text, sections)`` where each section is
+    ``{"page": int, "section": str, "text": str}``.
+
+    Supports: PDF, DOCX, TXT, MD, RST. For other formats, attempts UTF-8
+    read. Never crashes on extraction failure — returns an empty result.
+    """
+    from pathlib import Path
+
+    p = Path(path)
+    ext = p.suffix.lower().lstrip(".")
+    sections: list[dict] = []
+    text = ""
+
+    if ext == "pdf":
+        try:
+            from pypdf import PdfReader
+
+            reader = PdfReader(str(p))
+            pages = []
+            for i, page in enumerate(reader.pages, 1):
+                pg_text = (page.extract_text() or "").strip()
+                if pg_text:
+                    pages.append(pg_text)
+                    sections.append({"page": i, "section": f"page-{i}", "text": pg_text})
+            text = "\n\n".join(pages)
+        except Exception as exc:  # noqa: BLE001
+            import logging
+
+            logging.getLogger("jarvis.store").warning("PDF extraction failed for %s: %s", p, exc)
+            return "", []
+
+    elif ext == "docx":
+        try:
+            import docx2txt
+
+            text = (docx2txt.process(str(p)) or "").strip()
+            sections.append({"page": 1, "section": "docx-body", "text": text})
+        except Exception as exc:  # noqa: BLE001
+            import logging
+
+            logging.getLogger("jarvis.store").warning("DOCX extraction failed for %s: %s", p, exc)
+            return "", []
+
+    else:
+        # TXT / MD / RST / unknown — plain UTF-8 read.
+        try:
+            text = p.read_text(encoding="utf-8", errors="ignore")
+            sections.append({"page": 1, "section": "file", "text": text})
+        except OSError as exc:
+            import logging
+
+            logging.getLogger("jarvis.store").warning("File read failed for %s: %s", p, exc)
+            return "", []
+
+    return text, sections
+
+
+def ingest_file(path, *, metadata: dict | None = None) -> list[str]:
+    """Extract text from a file (PDF/DOCX/TXT/MD), chunk, and ingest.
+
+    Enriches each chunk's metadata with:
+      - ``source``: the filename
+      - ``page``: page number (for PDFs) or 1
+      - ``section``: section label
+      - ``filename``: original filename
+      - ``timestamp``: ISO-format ingest time
+
+    Returns the list of Chroma chunk IDs.
+    """
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    from langchain_core.documents import Document
+
+    p = Path(path)
+    text, sections = extract_text_from_file(p)
+    if not text:
+        return []
+
+    base_meta = dict(metadata or {})
+    base_meta.setdefault("source", p.name)
+    base_meta.setdefault("filename", p.name)
+    base_meta.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
+
+    docs: list[Document] = []
+    for sec in sections:
+        chunks = _split_text(sec["text"])
+        for chunk in chunks:
+            cm = {**base_meta, "page": sec.get("page", 1), "section": sec.get("section", "")}
+            docs.append(Document(page_content=chunk, metadata=cm))
+
+    return ingest_documents(docs) if docs else []
+
+
 # ---------------------------------------------------------------------------
 # Simple recursive text splitter  (avoids needing langchain_text_splitters)
 # ---------------------------------------------------------------------------
@@ -201,6 +303,11 @@ def ingest_documents(docs: list[Document]) -> list[str]:
     module's recursive splitter and stored with the document's
     metadata (plus a generated chunk_id) so the source is attributable
     at retrieval time.
+
+    A ``kind`` metadata tag (one of: docs / memory / code / conversations)
+    may be present in the document's metadata; if missing it defaults to
+    ``"docs"``. This lets ``query_context`` restrict to a logical collection
+    via a Chroma ``where`` filter without managing multiple physical stores.
     """
     if not docs:
         return []
@@ -214,13 +321,15 @@ def ingest_documents(docs: list[Document]) -> list[str]:
 
     for doc in docs:
         source = (doc.metadata or {}).get("source") or "<unknown>"
+        kind = (doc.metadata or {}).get("kind", "docs") or "docs"
         for chunk in _split_text(doc.page_content):
             chunk_id = uuid.uuid5(
                 uuid.NAMESPACE_OID, f"jarvis::{source}::{chunk[:64]}"
             ).hex
             ids.append(chunk_id)
             documents.append(chunk)
-            metadatas.append({**(doc.metadata or {}), "chunk_id": chunk_id})
+            metas = {**(doc.metadata or {}), "chunk_id": chunk_id, "kind": kind}
+            metadatas.append(metas)
 
     embeddings = emb_fn.embed_documents(documents)
     collection.upsert(

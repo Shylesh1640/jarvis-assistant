@@ -157,6 +157,16 @@ _STYLE_SUFFIXES = {
     "concise": " Keep the answer concise.",
     "detailed": " Give a thorough, detailed answer.",
     "code": " Lead with code; keep prose minimal.",
+    "teaching": (
+        " Explain this in a teaching style: introduce the concept, give a"
+        " concrete example, then explain *why* it works. Structure the"
+        " answer as: Concept, Example, Explanation."
+    ),
+    "architecture": (
+        " Approach this as a systems-architecture task: identify the"
+        " components, their responsibilities, data flows, trade-offs, and"
+        " failure modes. Prefer diagrams (ASCII) where helpful."
+    ),
 }
 
 

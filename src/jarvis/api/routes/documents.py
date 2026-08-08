@@ -10,20 +10,22 @@
 from __future__ import annotations
 
 import logging
+import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, UploadFile
 from langchain_core.documents import Document
 
 from jarvis.config.settings import settings
-from jarvis.memory.store import get_collection, ingest_documents
+from jarvis.memory.store import get_collection, ingest_documents, ingest_file
 
 logger = logging.getLogger("jarvis.api.documents")
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
-_ALLOWED_UPLOAD_EXTS = {"txt", "md", "markdown", "rst"}
-_MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB per file
+_ALLOWED_UPLOAD_EXTS = {"txt", "md", "markdown", "rst", "pdf", "docx"}
+_BINARY_EXTS = {"pdf", "docx"}
+_MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB per file (PDFs can be large)
 
 
 @router.get("/count")
@@ -59,61 +61,89 @@ def _check_upload(file: UploadFile) -> tuple[str, bytes]:
 
 @router.post("/upload")
 def upload_documents(files: list[UploadFile]) -> dict:
-    """Chunk + upsert uploaded .txt/.md files into the RAG store.
+    """Chunk + upsert uploaded files into the RAG store.
 
-    Returns the number of files ingested and the chunk ids assigned. Ids
-    are deterministic (per file path + chunk content), so re-uploading
-    the same file is a no-op.
+    Supports TXT/MD/RST (UTF-8) and PDF/DOCX (binary extraction). Returns
+    the number of files ingested and the chunk ids assigned.
     """
     if not files:
         raise HTTPException(status_code=400, detail="No files provided")
 
-    documents: list[Document] = []
+    all_ids: list[str] = []
     accepted: list[str] = []
     for f in files:
         name, data = _check_upload(f)
-        try:
-            content = data.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise HTTPException(status_code=422, detail=f"{name} is not valid UTF-8") from exc
-        documents.append(Document(page_content=content, metadata={"source": name}))
-        accepted.append(name)
+        ext = Path(name).suffix.lower().lstrip(".")
+        if ext in _BINARY_EXTS:
+            # Write binary to a temp file and use ingest_file for extraction.
+            suffix = f".{ext}"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(data)
+                tmp_path = Path(tmp.name)
+            try:
+                ids = ingest_file(tmp_path, metadata={"source": name, "filename": name})
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("extract/ingest failed for %s", name)
+                raise HTTPException(status_code=500, detail=f"Failed to ingest {name}: {exc}") from exc
+            finally:
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            if ids:
+                all_ids.extend(ids)
+                accepted.append(name)
+            else:
+                logger.warning("No text extracted from %s", name)
+        else:
+            try:
+                content = data.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise HTTPException(status_code=422, detail=f"{name} is not valid UTF-8") from exc
+            doc = Document(page_content=content, metadata={"source": name})
+            try:
+                ids = ingest_documents([doc])
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("ingest failed for %s", name)
+                raise HTTPException(status_code=500, detail=f"Ingest failed: {exc}") from exc
+            all_ids.extend(ids)
+            accepted.append(name)
 
-    try:
-        ids = ingest_documents(documents)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("ingest failed")
-        raise HTTPException(status_code=500, detail=f"Ingest failed: {exc}") from exc
-
-    logger.info("Uploaded %d file(s) -> %d chunk(s)", len(accepted), len(ids))
-    return {"files": accepted, "chunks": len(ids), "ids": ids}
+    logger.info("Uploaded %d file(s) -> %d chunk(s)", len(accepted), len(all_ids))
+    return {"files": accepted, "chunks": len(all_ids), "ids": all_ids}
 
 
 @router.post("/ingest-folder")
 def ingest_folder(folder: str | None = None) -> dict:
-    """Scan a folder on disk and ingest supported files into the store."""
+    """Scan a folder on disk and ingest supported files into the store.
+
+    Uses ``ingest_file`` which handles PDF/DOCX binary extraction as well
+    as plain text formats, enriching each chunk with page/section metadata.
+    """
     target = Path(folder or settings.docs_folder)
     if not target.exists():
         raise HTTPException(status_code=404, detail=f"Folder not found: {target}")
     if not target.is_dir():
         raise HTTPException(status_code=400, detail=f"Not a directory: {target}")
 
-    documents: list[Document] = []
+    all_ids: list[str] = []
+    file_count = 0
     for path in sorted(target.rglob("*")):
         if not path.is_file():
             continue
         if path.suffix.lower().lstrip(".") not in _ALLOWED_UPLOAD_EXTS:
             continue
         try:
-            content = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            logger.warning("Skipping %s (not UTF-8)", path)
+            ids = ingest_file(path, metadata={"source": path.name})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Skipping %s (extract failed): %s", path, exc)
             continue
-        documents.append(Document(page_content=content, metadata={"source": str(path)}))
+        if ids:
+            all_ids.extend(ids)
+            file_count += 1
 
-    if not documents:
+    if not all_ids:
         return {"files": 0, "chunks": 0, "ids": []}
 
-    ids = ingest_documents(documents)
-    logger.info("Ingested folder %s -> %d chunk(s)", target, len(ids))
-    return {"files": len(documents), "chunks": len(ids), "ids": ids}
+    logger.info("Ingested folder %s -> %d file(s), %d chunk(s)", target, file_count, len(all_ids))
+    return {"files": file_count, "chunks": len(all_ids), "ids": all_ids}
