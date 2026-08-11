@@ -1,7 +1,7 @@
 """LangGraph definition wiring together the orchestration nodes."""
 import logging
 
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
@@ -15,19 +15,9 @@ from jarvis.orchestration.branches import (
 from jarvis.orchestration.context_node import build_context
 from jarvis.orchestration.router_node import classify_intent
 from jarvis.orchestration.state import JarvisState
-from jarvis.tools.coding.file_ops import read_file
-from jarvis.tools.coding.git_diff import git_diff
-from jarvis.tools.coding.list_directory import list_directory
-from jarvis.tools.coding.shell import run_shell
-from jarvis.tools.coding.write_ops import edit_file, write_file
-from jarvis.tools.general.calculator import calculator
-from jarvis.tools.general.rag_search import rag_search
-from jarvis.tools.general.search_code import search_code
+from jarvis.tools.registry import all_tools
 
 logger = logging.getLogger(__name__)
-
-_GENERAL_TOOLS = [calculator, rag_search, search_code, read_file, write_file, edit_file, run_shell]
-_CODING_TOOLS = [read_file, search_code, list_directory, git_diff, write_file, edit_file, run_shell]
 
 
 def route_decision(state: JarvisState) -> str:
@@ -43,30 +33,67 @@ def route_after_risk(state: JarvisState) -> str:
     messages = state.get("messages", [])
     if messages and hasattr(messages[-1], "tool_calls") and messages[-1].tool_calls:
         logger.info("Routing to tools after risk check")
-        return "general_tools"
+        return "execute_tools"
     logger.info("No tool calls — ending graph")
     return END
 
 
-def record_tools(state: JarvisState) -> JarvisState:
-    """Capture names of tools just executed from the trailing ToolMessages.
+def route_after_tools(state: JarvisState) -> str:
+    """Route back to the branch that requested the tool so its loop continues."""
+    intent = state.get("intent", "general")
+    if intent == "coding":
+        return "coding_llm"
+    return "general_llm"
 
-    Runs after the ``general_tools`` ToolNode. The names are appended to
-    ``state["tools_used"]`` so the response can show "Tools used: …".
-    Deduplicates while preserving first-seen order.
+
+def _clip_content(content: object, limit: int = 4000) -> str:
+    text = content if isinstance(content, str) else str(content)
+    if len(text) > limit:
+        text = text[:limit] + "\n... (truncated)"
+    return text
+
+
+def record_tools(state: JarvisState) -> JarvisState:
+    """Capture names/results/errors of the tool calls just executed.
+
+    Scans only the ToolMessages appended after the most recent AIMessage
+    that requested tools, so repeated visits to this node never double
+    count an earlier round. Populates ``tools_used``, ``tool_results`` and
+    ``tool_errors`` (a ToolMessage whose content starts with "Error" is
+    treated as an execution failure).
     """
     msgs = state.get("messages", [])
+    anchor = 0
+    for i, m in enumerate(msgs):
+        if isinstance(m, AIMessage) and getattr(m, "tool_calls", None):
+            anchor = i
+
     seen: set[str] = set(state.get("tools_used", []))
-    out: list[str] = list(state.get("tools_used", []))
-    for m in msgs:
-        if isinstance(m, ToolMessage):
-            name = getattr(m, "name", None) or ""
-            if name and name not in seen:
-                seen.add(name)
-                out.append(name)
-    state["tools_used"] = out
-    if out:
-        logger.info("Tools used so far: %s", out)
+    tools_used: list[str] = list(state.get("tools_used", []))
+    results: list[dict] = list(state.get("tool_results", []))
+    errors: list[dict] = list(state.get("tool_errors", []))
+
+    for m in msgs[anchor + 1:]:
+        if not isinstance(m, ToolMessage):
+            continue
+        name = getattr(m, "name", None) or ""
+        content = _clip_content(getattr(m, "content", None))
+        if name and name not in seen:
+            seen.add(name)
+            tools_used.append(name)
+        entry = {"name": name, "content": content}
+        if content.lstrip().startswith("Error"):
+            errors.append(entry)
+        else:
+            results.append(entry)
+
+    state["tools_used"] = tools_used
+    state["tool_results"] = results
+    state["tool_errors"] = errors
+    if tools_used:
+        logger.info("Tools used so far: %s", tools_used)
+    if errors:
+        logger.warning("Tool errors so far: %s", [e["name"] for e in errors])
     return state
 
 
@@ -76,11 +103,11 @@ def build_graph():
     graph.add_node("classify_intent", classify_intent)
     graph.add_node("build_context", build_context)
     graph.add_node("general_llm", run_general_branch)
+    graph.add_node("coding_llm", run_coding_branch)
     graph.add_node("check_risk", check_risk)
     graph.add_node("approval_gate", approval_gate)
-    graph.add_node("general_tools", ToolNode(_GENERAL_TOOLS))
+    graph.add_node("execute_tools", ToolNode(all_tools()))
     graph.add_node("record_tools", record_tools)
-    graph.add_node("coding_branch", run_coding_branch)
     graph.add_node("complex_branch", run_complex_branch)
 
     graph.set_entry_point("classify_intent")
@@ -91,29 +118,32 @@ def build_graph():
         route_decision,
         {
             "general": "general_llm",
-            "coding": "coding_branch",
+            "coding": "coding_llm",
             "complex": "complex_branch",
         },
     )
 
     graph.add_edge("general_llm", "check_risk")
+    graph.add_edge("coding_llm", "check_risk")
+    graph.add_edge("complex_branch", END)
+
     graph.add_conditional_edges(
         "check_risk",
         route_after_risk,
         {
             "approval_gate": "approval_gate",
-            "general_tools": "general_tools",
+            "execute_tools": "execute_tools",
             END: END,
         },
     )
     graph.add_edge("approval_gate", END)
-    graph.add_edge("general_tools", "record_tools")
-    graph.add_edge("record_tools", "general_llm")
+    graph.add_edge("execute_tools", "record_tools")
+    graph.add_conditional_edges("record_tools", route_after_tools, {
+        "coding_llm": "coding_llm",
+        "general_llm": "general_llm",
+    })
 
-    graph.add_edge("coding_branch", END)
-    graph.add_edge("complex_branch", END)
-
-    logger.info("Graph built with approval nodes + tool recorder + checkpointer")
+    logger.info("Graph built with approval nodes + tool loops + checkpointer")
     return graph.compile(checkpointer=InMemorySaver())
 
 

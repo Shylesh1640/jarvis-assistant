@@ -44,6 +44,17 @@ class Settings(BaseSettings):
     shell_allowed_commands: str = "ls,dir,cat,type,echo,git,pytest,python -m pytest,ruff,pip,uv,npm,npm run build,npm test"
     # Hard wall-clock cap for run_tests / run_shell invocations (seconds).
     tool_subprocess_timeout: int = 120
+    # Maximum file SIZE (bytes) the read_file tool will read. Larger files are
+    # refused outright so read_file cannot pull an enormous file into memory.
+    max_read_file_bytes: int = 1_000_000
+    # Maximum number of CHARACTERS of file content returned to the model.
+    # Larger outputs are truncated with a marker instead of flooding context.
+    max_read_file_chars: int = 100_000
+    # Maximum LLM tool-loop rounds per turn for the general and coding
+    # branches. When reached the graph stops and returns a clear message.
+    max_tool_iterations: int = 5
+    # How long a pending approval stays valid before it expires (seconds).
+    approval_ttl_seconds: int = 600
 
     # --- Persistence ---
     # Postgres DSN. When empty the app falls back to a local SQLite file at

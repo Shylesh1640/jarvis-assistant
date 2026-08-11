@@ -17,7 +17,6 @@ _HIGH_RISK_TOOLS = {
 }
 
 _MEDIUM_RISK_TOOLS = {
-    "read_file",
     "write_file",
     "edit_file",
     "file_write",
@@ -32,6 +31,7 @@ _LOW_RISK_TOOLS = {
     "git_diff",
     "calculator",
     "rag_search",
+    "read_file",
 }
 
 _HIGH_RISK_ARGS = {

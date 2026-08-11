@@ -23,6 +23,13 @@ class ChatResponse(BaseModel):
     model_used: str | None = None
     approval_required: bool = False
     pending_action: str | None = None
+    # Structured view of the exact tool calls awaiting approval:
+    # [{"name": "write_file", "args": {"file_path": "..."}}].
+    pending_tool_calls: list[dict] = []
+    # Approval lifecycle: short id + ISO-8601 UTC expiry so the UI can render
+    # a countdown and disable approval once the TTL has passed.
+    approval_id: str | None = None
+    approval_expires_at: str | None = None
     # Names of tools executed while producing this reply (e.g. ["calculator"]).
     tools_used: list[str] = []
     # Citations for RAG replies: [{"source": "docs/x.md", "chunk_id": "..."}].

@@ -4,6 +4,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from langchain_core.messages import AIMessage
+
+# Shared tool-call queue consumed by _ScriptedChatOllama.invoke.
+_TOOL_SCRIPT: list[dict] = []
 
 
 class _FakeChatOllama:
@@ -64,3 +68,57 @@ def _patch_chat_ollama(monkeypatch):
 def fake_ollama():
     """Expose the captured ChatOllama instances for direct assertions."""
     return _FakeChatOllama
+
+
+class _ScriptedChatOllama:
+    """Like _FakeChatOllama but returns real AIMessage (with tool_calls).
+
+    Tool-call dicts are consumed from a module-level queue shared across
+    instances so tests can script instances created deep inside
+    ``get_model_named``. Once the queue drains, invokes return a plain final
+    AIMessage. Used to exercise the tool loop through the real LangGraph.
+    """
+
+    instances: list["_ScriptedChatOllama"] = []
+
+    def __init__(self, model: str = "", base_url: str = "", temperature: float = 0.4, **kwargs) -> None:
+        self.model = model
+        self.options = kwargs
+        self.bound_tools: list = []
+        self.last_prompt: object | None = None
+        self.invocation_count: int = 0
+        _ScriptedChatOllama.instances.append(self)
+
+    def bind_tools(self, tools: list):
+        self.bound_tools = list(tools)
+        return self
+
+    def invoke(self, prompt, **kwargs):
+        self.last_prompt = prompt
+        self.invocation_count += 1
+        if _TOOL_SCRIPT:
+            tc = _TOOL_SCRIPT.pop(0)
+            return AIMessage(content="", tool_calls=[tc])
+        return AIMessage(content="all done", tool_calls=[])
+
+
+@pytest.fixture
+def monologue_ollama(monkeypatch):
+    """Patch ChatOllama with the scripted fake returning real AIMessages."""
+    _ScriptedChatOllama.instances.clear()
+    _TOOL_SCRIPT.clear()
+
+    import langchain_ollama
+    import jarvis.models.ollama_client as oc
+
+    monkeypatch.setattr(langchain_ollama, "ChatOllama", _ScriptedChatOllama)
+    monkeypatch.setattr(oc, "ChatOllama", _ScriptedChatOllama)
+    yield _ScriptedChatOllama
+    _TOOL_SCRIPT.clear()
+    _ScriptedChatOllama.instances.clear()
+
+
+@pytest.fixture
+def tool_script():
+    """Return the shared queue of pending tool-call dicts to script."""
+    return _TOOL_SCRIPT

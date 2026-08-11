@@ -2,23 +2,20 @@
 import logging
 import time
 
+from langchain_core.messages import ToolMessage
+
 from jarvis.config.settings import settings
 from jarvis.models.ollama_client import get_model_named
 from jarvis.models.openrouter_client import run_complex_with_fallback
 from jarvis.orchestration.context_window import (
     build_final_chat_dicts,
     build_final_messages,
-    build_final_prompt,
 )
 from jarvis.orchestration.model_selector import select_model
 from jarvis.orchestration.state import JarvisState
-from jarvis.tools.coding.file_ops import read_file
-from jarvis.tools.general.calculator import calculator
-from jarvis.tools.general.rag_search import rag_search
+from jarvis.tools.registry import CODING_BOUND_TOOLS, GENERAL_BOUND_TOOLS
 
 logger = logging.getLogger(__name__)
-
-_GENERAL_TOOLS = [calculator, rag_search]
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +88,26 @@ def _structured_request_log(
 # General branch  (tool-calling LLM with sliding-window context)
 # ---------------------------------------------------------------------------
 
+def _tool_loop_capped(state: JarvisState) -> bool:
+    """Return True (and set a final response) when the tool loop is at its cap.
+
+    Called at the top of a branch after the ToolNode has added a ToolMessage:
+    instead of invoking the LLM yet again we stop and report the cap so the
+    graph can reach END safely.
+    """
+    max_iterations = max(1, getattr(settings, "max_tool_iterations", 5))
+    if state.get("tool_call_count", 0) >= max_iterations:
+        messages = state.get("messages", [])
+        if messages and isinstance(messages[-1], ToolMessage):
+            state["final_response"] = (
+                f"I stopped after reaching the maximum of {max_iterations} tool "
+                f"iterations. Ask me to continue if you'd like me to keep going."
+            )
+            logger.warning("Tool loop reached cap (%s iterations)", max_iterations)
+            return True
+    return False
+
+
 def run_general_branch(state: JarvisState) -> JarvisState:
     if not state.get("messages"):
         logger.info("Building final messages for general branch (with context window)")
@@ -99,12 +116,15 @@ def run_general_branch(state: JarvisState) -> JarvisState:
         logger.info("Skipping LLM call — approval resume, tools pending")
         return state
 
+    if _tool_loop_capped(state):
+        return state
+
     model_name = select_model(state, settings)
     state["selected_path"] = "general"
     state["selected_model"] = model_name
     state["selection_reason"] = f"general branch using {model_name}"
 
-    llm = get_model_named(model_name, intent="general").bind_tools(_GENERAL_TOOLS)
+    llm = get_model_named(model_name, intent="general").bind_tools(GENERAL_BOUND_TOOLS)
     started = time.monotonic()
     try:
         response = llm.invoke(state["messages"])
@@ -131,6 +151,7 @@ def run_general_branch(state: JarvisState) -> JarvisState:
         state["final_response"] = response.content
         logger.info("General branch final response (no tool calls) using %s", model_name)
     else:
+        state["tool_call_count"] = state.get("tool_call_count", 0) + 1
         logger.info(
             "General branch LLM (%s) requested %d tool call(s)",
             model_name, len(response.tool_calls),
@@ -141,28 +162,41 @@ def run_general_branch(state: JarvisState) -> JarvisState:
 
 
 # ---------------------------------------------------------------------------
-# Coding branch
+# Coding branch (full tool loop)
 # ---------------------------------------------------------------------------
 
 def run_coding_branch(state: JarvisState) -> JarvisState:
-    logger.info("Coding branch selected")
-    prompt = build_final_prompt(state, settings)
+    """Coding branch with a tool loop.
+
+    Flow: build messages → coding_llm → (tool call → ToolNode → coding_llm)
+    → final answer, using the coding model already chosen by
+    ``select_model`` — the configured coding model is never changed.
+    """
+    if not state.get("messages"):
+        logger.info("Building final messages for coding branch (with context window)")
+        state["messages"] = build_final_messages(state, settings)
+    elif state.get("approved"):
+        logger.info("Skipping LLM call — approval resume, tools pending")
+        return state
+
+    if _tool_loop_capped(state):
+        return state
 
     model_name = select_model(state, settings)
     state["selected_path"] = "coding"
     state["selected_model"] = model_name
     state["selection_reason"] = f"coding branch using {model_name}"
 
-    llm = get_model_named(model_name, intent="coding").bind_tools([read_file])
+    llm = get_model_named(model_name, intent="coding").bind_tools(CODING_BOUND_TOOLS)
     started = time.monotonic()
     try:
-        response = llm.invoke(prompt)
+        response = llm.invoke(state["messages"])
     except Exception as exc:  # noqa: BLE001
         category, err_type = _classify_ollama_error(exc)
         _structured_request_log(
             branch="coding", model_name=model_name,
             intent=state.get("intent", "coding"), complexity=state.get("complexity", "easy"),
-            messages=[], duration_ms=(time.monotonic() - started) * 1000,
+            messages=state["messages"], duration_ms=(time.monotonic() - started) * 1000,
             num_ctx=settings.ollama_context_length, num_batch=settings.ollama_num_batch,
             error_category=category,
         )
@@ -171,11 +205,20 @@ def run_coding_branch(state: JarvisState) -> JarvisState:
     _structured_request_log(
         branch="coding", model_name=model_name,
         intent=state.get("intent", "coding"), complexity=state.get("complexity", "easy"),
-        messages=[], duration_ms=duration_ms,
+        messages=state["messages"], duration_ms=duration_ms,
         num_ctx=settings.ollama_context_length, num_batch=settings.ollama_num_batch,
     )
-    state["final_response"] = response.content
-    logger.info("Coding branch complete using %s", model_name)
+    state["messages"].append(response)
+
+    if not response.tool_calls:
+        state["final_response"] = response.content
+        logger.info("Coding branch final response (no tool calls) using %s", model_name)
+    else:
+        state["tool_call_count"] = state.get("tool_call_count", 0) + 1
+        logger.info(
+            "Coding branch LLM (%s) requested %d tool call(s)",
+            model_name, len(response.tool_calls),
+        )
     return state
 
 

@@ -1,8 +1,11 @@
 """Risk-check and approval-gate nodes for human-in-the-loop."""
 import logging
+import uuid
+from datetime import datetime, timedelta, timezone
 
 from langchain_core.messages import AIMessage
 
+from jarvis.config.settings import settings
 from jarvis.guardrails.risk import check_tool_risk
 from jarvis.orchestration.state import JarvisState
 
@@ -69,15 +72,56 @@ def check_risk(state: JarvisState) -> JarvisState:
 def approval_gate(state: JarvisState) -> JarvisState:
     """Called when approval is required but has not yet been given.
 
-    Sets ``final_response`` to a message asking the user for permission.
-    The graph will reach ``END`` after this node, and the caller (API
-    layer) is responsible for storing the pending tool calls and
-    re-invoking with ``approved=True`` when the user consents.
+    Records the exact pending tool calls (name + args) so a later approval
+    can execute exactly those stored calls, stamps an approval id + expiry
+    (TTL), and sets ``final_response`` to a message asking the user for
+    permission. The graph reaches ``END`` after this node; the caller (API
+    layer) stores the state and re-invokes with ``approved=True`` when the
+    user consents before the expiry.
     """
     action_desc = state.get("pending_action", "perform an action")
+    messages = state.get("messages", [])
+    pending: list[dict] = []
+    for msg in reversed(messages):
+        if isinstance(msg, AIMessage) and msg.tool_calls:
+            pending = [
+                {"name": tc.get("name", ""), "args": tc.get("args", {}) or {}}
+                for tc in msg.tool_calls
+            ]
+            break
+
+    state["pending_tool_calls"] = pending
+    state["approval_id"] = uuid.uuid4().hex
+    ttl = max(60, getattr(settings, "approval_ttl_seconds", 600))
+    state["approval_expires_at"] = (
+        datetime.now(timezone.utc) + timedelta(seconds=ttl)
+    ).isoformat()
+
     state["final_response"] = (
         f"I'd like to {action_desc}.\n"
-        "Shall I proceed? (Reply with approval to continue.)"
+        f"Approval '{(state['approval_id'])[:8]}…' expires in {ttl}s. "
+        "Reply with approval to continue."
     )
-    logger.info("Approval gate triggered: %s", action_desc)
+    logger.info(
+        "Approval gate triggered: %s (id=%s, ttl=%ds)",
+        action_desc, state["approval_id"], ttl,
+    )
     return state
+
+
+def approval_is_expired(state: JarvisState) -> bool:
+    """True when a stored approval's expiry has passed (ISO-8601 UTC).
+
+    Missing/malformed expiry is treated as not-yet-expired so a legacy
+    pending approval still follows its normal path.
+    """
+    raw = state.get("approval_expires_at")
+    if not raw:
+        return False
+    try:
+        expires_at = datetime.fromisoformat(raw)
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    return datetime.now(timezone.utc) > expires_at

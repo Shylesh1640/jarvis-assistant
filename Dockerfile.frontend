@@ -1,0 +1,12 @@
+# Frontend runtime: Streamlit chat UI.
+FROM python:3.14-slim
+
+WORKDIR /app
+
+COPY streamlit_app.py .
+
+RUN pip install --no-cache-dir "streamlit>=1.59.1" "httpx>=0.28.1"
+
+EXPOSE 8501
+
+CMD ["streamlit", "run", "streamlit_app.py", "--server.address", "0.0.0.0", "--server.port", "8501"]

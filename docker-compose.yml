@@ -1,9 +1,10 @@
-# Postgres for Jarvis Assistant session / message / summary / task storage.
+# Jarvis Assistant stack: Postgres + FastAPI backend + Streamlit frontend.
 #
-#   docker compose up -d postgres
+#   docker compose up -d --build
 #
-# The app falls back to a local SQLite file (data/jarvis.db) when
-# POSTGRES_DSN is empty, so Docker is optional for local hacking.
+# Brings up all three services. The backend uses Postgres for persistence and
+# talks to the Ollama instance running on the host (host.docker.internal),
+# so start `ollama serve` on the host before chatting.
 services:
   postgres:
     image: postgres:16-alpine
@@ -23,5 +24,41 @@ services:
       timeout: 3s
       retries: 10
 
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: jarvis-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DSN: postgresql+psycopg://jarvis:jarvis@postgres:5432/jarvis
+      # Ollama runs on the host, not inside a container.
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+    ports:
+      - "8000:8000"
+    volumes:
+      - jarvis_data:/app/data
+      - jarvis_workspace:/app/workspace
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: jarvis-frontend
+    restart: unless-stopped
+    environment:
+      BACKEND_URL: http://backend:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      - backend
+
 volumes:
   jarvis_pgdata:
+  jarvis_data:
+  jarvis_workspace:

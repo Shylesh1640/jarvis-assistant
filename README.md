@@ -280,9 +280,9 @@ src/jarvis/
 │   ├── branches.py    # run_general/coding/complex branch nodes (typed errors)
 │   ├── context_node.py, context_window.py  # RAG + sliding-window context + caps
 │   ├── model_selector.py # picks model per intent × complexity
-│   └── approval_node.py # check_risk + approval_gate (human-in-the-loop)
+│   └── approval_node.py # check_risk + approval_gate + TTL (human-in-the-loop)
 ├── models/            # ollama_client.py, openrouter_client.py, runtime_diagnostics.py
-├── tools/             # general + coding (write/edit/shell/run_tests/git_diff/list_directory)
+├── tools/             # general + coding (write/edit/shell/run_tests/git_diff/list_directory) + registry.py
 ├── persistence/       # SQLAlchemy engine, models, repos (Postgres SQLite)
 ├── memory/            # ChromaDB store.py (multi-format ingest) + retrieve.py (hybrid) + summaries.py
 ├── guardrails/        # input_guard, output_guard (PII), risk classification
@@ -295,23 +295,41 @@ src/jarvis/
 ```
 classify_intent → build_context → route
  ├── general  → general_llm → check_risk ─┬─ approval_gate → END
- │                                          ├─ general_tools → general_llm (loop)
+ │                                          ├─ execute_tools → record_tools → branch (loop)
  │                                          └─ END
- ├── coding   → coding_branch → END
+ ├── coding   → coding_llm → check_risk ─┬─ approval_gate → END
+ │                                         ├─ execute_tools → record_tools → coding_llm (loop)
+ │                                         └─ END
  └── complex  → complex_branch → END
                  └─ on failure, fall back to general branch
 ```
 
 - **Routing** is conditional on `intent` (`general` / `coding` / `complex`).
-- The **general branch** is a tool-calling loop: the LLM may request
-  `calculator`, `rag_search`, or `search_code`, which execute via the
-  tool node, then the LLM is re-invoked until it produces a final answer.
-  The tools actually used are recorded into state and surfaced in the
-  response (`tools_used`, `sources`, `retrieved_context`).
+- **Tool registry** (`tools/registry.py`) is the single source of truth: each
+  branch's LLM is bound to its own tool set (`GENERAL_BOUND_TOOLS` /
+  `CODING_BOUND_TOOLS` = safe read-only tools + approval-gated write/exec
+  tools), while the graph's **shared** `ToolNode(all_tools())` executes
+  whatever the risk layer allows. A tool an LLM requests always resolves to
+  exactly one registered implementation.
+- **Branches are tool-calling loops**: the LLM may request
+  `calculator`, `rag_search`, `search_code`, `read_file`, etc., which
+  execute via the shared tool node, then the LLM is re-invoked until it
+  produces a final answer or reaches `max_tool_iterations` (default 5). The
+  tools used and their results/errors are recorded into state and surfaced
+  in the response (`tools_used`, `tool_results`, `tool_errors`, `sources`,
+  `retrieved_context`).
 - **Risk + approval**: every LLM tool call is classified low/medium/high
-  (`guardrails/risk.py`). Medium/high requests pause the graph at
-  `approval_gate`; the API keeps the pending state in-memory and resumes on
-  the next request with `approved=true`.
+  (`guardrails/risk.py`). Low-risk, read-only calls (`calculator`,
+  `rag_search`, `search_code`, `read_file`, `list_directory`, `git_diff`)
+  execute automatically. Medium/high requests pause the graph at
+  `approval_gate`, which records the *exact* pending tool calls (name +
+  args), stamps an approval id + expiry (`approval_id`,
+  `approval_expires_at`, TTL from `approval_ttl_seconds`, default 600 s), and
+  emits a message for the UI. The API keeps the pending state in-memory and
+  resumes on the next request with `approved=true`. On resume the stored
+  call(s) execute exactly as captured — never an arbitrary action. If the
+  TTL has passed, the API rejects the resume with **410 Gone** so a stale
+  approval can never fire.
 - **Coding tools** (workspace-guarded): `write_file`, `edit_file`,
   `run_shell`, `run_tests`, `git_diff`, `list_directory`, and `search_code`
   live in `tools/coding` and `tools/general`. File writes are confined under
@@ -320,8 +338,10 @@ classify_intent → build_context → route
   `TOOL_SUBPROCESS_TIMEOUT` seconds. `git_diff` is read-only (flags
   restricted to a safe allowlist; output capped at 8 KB) and
   `list_directory` is read-only (max 200 entries; refuses paths that escape
-  the workspace) — both are low risk and need no approval. Write/exec tools
-  are classified medium/high risk so they go through approval.
+  the workspace). `read_file` is read-only and low risk by default, but
+  still opens a workspace-confined path and refuses secrets/sensitive files;
+  `read_file` against a sensitive path escalates to approval. Write/exec
+  tools are classified medium/high risk so they go through approval.
 - **Complex branch** tries the configured OpenRouter model chain in order;
   if all fail it transparently degrades to the local general branch.
 - **Memory / summarization**: ChromaDB cosine collection seeded via the CLI
@@ -379,10 +399,18 @@ in-process executor; UI toggle to run long prompts in the background
 ✅ **Persistence** — sessions/messages/summaries/tasks via SQLAlchemy on
 Postgres (Docker) or a local SQLite fallback
 ✅ **Guardrails** — input validation, PII output redaction, tool risk
-classification + human-in-the-loop approval gate wired into the graph
+classification + human-in-the-loop approval gate wired into the graph.
+Risky tool calls pause with a live TTL countdown; the exact pending tool
+call is captured and only that call executes on approval, and expired
+approvals are rejected (HTTP 410)
+✅ **Tool loops** — a central tool registry binds per-branch tool sets and
+feeds a shared `ToolNode`; both general and coding branches loop (LLM →
+tool → LLM) with a `max_tool_iterations` cap and `tool_results`/`tool_errors`
+recorded per turn
 ✅ **Streamlit UI** — chat, model-config sidebar, GPU runtime panel,
 answer styles, selected-text follow-ups, "Retry last message",
-"Copy answer", conversation export (`.md`), task offload, and
+"Copy answer", conversation export (`.md`), task offload, and a
+pending-action card (exact tool calls + expiry countdown) with
 Approve / Deny for risky tool actions
 ✅ **Resilience** — LangGraph `InMemorySaver` checkpointer for interrupted
 run recovery; typed Ollama errors surface as clean HTTP statuses

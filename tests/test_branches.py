@@ -110,11 +110,18 @@ def test_coding_branch_forwards_selected_text_into_prompt(configured_settings, f
         selected_text="yield from generator",
     )
     run_coding_branch(state)
-    prompt = fake_ollama.instances[-1].last_prompt
-    assert isinstance(prompt, str)
-    assert "yield from generator" in prompt
-    assert "what does this line do?" in prompt
-    assert "selected the following text" in prompt
+    # The coding branch now runs a messages-based tool loop: the fake LLM
+    # receives a message list whose user message frames the selection. (The
+    # fake records the mutable list, and the branch appends its response to
+    # the same object, so find the human message rather than the tail.)
+    messages = fake_ollama.instances[-1].last_prompt
+    assert isinstance(messages, list)
+    human = [m for m in messages if getattr(m, "type", "") == "human"]
+    assert human
+    joined = "\n".join(getattr(m, "content", "") or "" for m in human)
+    assert "yield from generator" in joined
+    assert "what does this line do?" in joined
+    assert "selected the following text" in joined
 
 
 # ---------------------------------------------------------------------------

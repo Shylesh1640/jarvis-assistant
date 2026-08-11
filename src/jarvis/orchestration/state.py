@@ -30,13 +30,22 @@ class JarvisState(TypedDict, total=False):
     sources: list[dict[str, str]]
     tool_calls: list[dict[str, Any]]
     tool_results: list[dict[str, Any]]
+    tool_errors: list[str]
     tools_used: list[str]
+    # Number of LLM rounds in the current turn that requested tool calls.
+    # Used to cap the tool loop (see MAX_TOOL_ITERATIONS).
+    tool_call_count: int
 
     risk_level: Literal["low", "medium", "high"]
     approval_required: bool
     approved: bool
 
     pending_action: str | None
+    # Structured view of the tool calls awaiting approval: [{name, args}].
+    pending_tool_calls: list[dict[str, Any]]
+    # Approval lifecycle fields (populated when approval_required=true).
+    approval_id: str | None
+    approval_expires_at: str | None
 
     fallback_count: int
     error_state: str | None

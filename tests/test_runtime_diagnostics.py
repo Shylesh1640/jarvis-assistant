@@ -1,10 +1,9 @@
-"""Tests for runtime_diagnostics.
+﻿"""Tests for runtime_diagnostics.
 
 Mocks Ollama HTTP + `ollama ps` + `nvidia-smi`. Never requires a real GPU or
 running Ollama server.
 """
 from __future__ import annotations
-
 
 import httpx
 
@@ -42,6 +41,11 @@ def test_classify_garbage_is_unknown():
     assert classify_processor("banana") == "Unknown"
 
 
+def test_classify_ninety_gpu_is_honestly_partial():
+    # We must never claim 100% GPU unless the source confirms it.
+    assert classify_processor("90% GPU") == "Partial CPU/GPU"
+
+
 # ---------------------------------------------------------------------------
 # check_ollama_reachable / running models (HTTP mocked)
 # ---------------------------------------------------------------------------
@@ -55,7 +59,7 @@ def _mock_resp(status=200, json_body=None):
 def test_running_models_parse(monkeypatch):
     monkeypatch.setattr(settings, "ollama_max_loaded_models", 1)
     body = {"models": [{"name": "qwen3:8b", "size": 5000000000}]}
-    monkeypatch.setattr(httpx, "post", lambda *a, **k: _mock_resp(200, body))
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _mock_resp(200, body))
     out, warns = get_ollama_running_models(base_url="http://x")
     assert len(out) == 1
     assert out[0]["name"] == "qwen3:8b"
@@ -64,10 +68,57 @@ def test_running_models_parse(monkeypatch):
 def test_running_models_too_many_warns(monkeypatch):
     monkeypatch.setattr(settings, "ollama_max_loaded_models", 1)
     body = {"models": [{"name": "a"}, {"name": "b"}]}
-    monkeypatch.setattr(httpx, "post", lambda *a, **k: _mock_resp(200, body))
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _mock_resp(200, body))
     out, warns = get_ollama_running_models(base_url="http://x")
     assert len(out) == 2
     assert any("2 models loaded" in w for w in warns)
+
+
+def test_running_models_uses_get_request(monkeypatch):
+    """Ollama 0.31 serves /api/ps on GET, so GET must be the primary call."""
+    calls: list[tuple[str, str]] = []
+
+    def _recording_get(url, **kwargs):
+        calls.append(("get", url))
+        return _mock_resp(404)
+
+    monkeypatch.setattr(httpx, "get", _recording_get)
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: _mock_resp(200, {"models": []}))
+    get_ollama_running_models(base_url="http://x")
+    assert calls, "GET /api/ps must be attempted first"
+    assert calls[0][1].endswith("/api/ps")
+
+
+def test_running_models_falls_back_to_post_for_old_builds(monkeypatch):
+    """Older Ollama carries errors only on GET; POST should rescue us."""
+    def _boom_get(url, **kwargs):
+        raise ConnectionError("method not allowed")
+
+    monkeypatch.setattr(httpx, "get", _boom_get)
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: _mock_resp(200, {"models": [{"name": "old:1"}]}))
+    out, warns = get_ollama_running_models(base_url="http://x")
+    assert len(out) == 1
+    assert out[0]["name"] == "old:1"
+
+
+def test_running_models_non_200_warns(monkeypatch):
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _mock_resp(500))
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: _mock_resp(500))
+    out, warns = get_ollama_running_models(base_url="http://x")
+    assert out == []
+    assert any("HTTP 500" in w for w in warns)
+
+
+def test_running_models_malformed_body(monkeypatch):
+    """Ollama returns junk shape → safe empty list, no exception."""
+    def _malformed(url, **kwargs):
+        r = httpx.Response(status_code=200)
+        r._content = b"{not valid json"
+        return r
+
+    monkeypatch.setattr(httpx, "get", _malformed)
+    out, warns = get_ollama_running_models(base_url="http://x")
+    assert out == []
 
 
 def test_ollama_unreachable_returns_false():
@@ -81,6 +132,13 @@ def test_ollama_unreachable_returns_false():
 # ---------------------------------------------------------------------------
 # ollama ps parser
 # ---------------------------------------------------------------------------
+
+
+def _call_parser(stdout: str):
+    """Parse `ollama ps` stdout directly via the module-level parser."""
+    import jarvis.models.runtime_diagnostics as rd
+
+    return rd._parse_ollama_ps(stdout), []
 
 
 def test_parse_ollama_ps_100_gpu():
@@ -119,11 +177,47 @@ def test_parse_ollama_ps_invalid_lines_skipped():
     assert rows[0]["name"] == "qwen3:8b"
 
 
-def _call_parser(stdout: str):
-    """Parse `ollama ps` stdout directly via the module-level parser."""
-    import jarvis.models.runtime_diagnostics as rd
+def test_parse_ollama_ps_no_status_column():
+    """Ollama 0.31 drops STATUS but adds CONTEXT/UNTIL — must still parse."""
+    stdout = (
+        "NAME            ID              SIZE      PROCESSOR   UNTIL             CONTEXT\n"
+        "qwen2.5-coder:7b  4c5a2f1b9e0d   5.2 GB     100% GPU    4 minutes ago     4096\n"
+    )
+    rows, _ = _call_parser(stdout)
+    assert len(rows) == 1
+    assert rows[0]["name"] == "qwen2.5-coder:7b"
+    assert rows[0]["processor"] == "100% GPU"
+    assert rows[0]["context"] == "4096"
+    assert rows[0]["until"] == "4 minutes ago"
+    # No STATUS column → safe empty value, not an exception.
+    assert rows[0]["status"] == ""
 
-    return rd._parse_ollama_ps(stdout), []
+
+def test_parse_ollama_ps_partial_offload_with_content():
+    stdout = (
+        "NAME          ID         SIZE    PROCESSOR       CONTEXT        UNTIL\n"
+        "qwen3:8b      aaa111     5.2 GB  40%/60% CPU/GPU 4096/8192      2 minutes ago\n"
+    )
+    rows, _ = _call_parser(stdout)
+    assert len(rows) == 1
+    assert rows[0]["name"] == "qwen3:8b"
+    assert rows[0]["processor"] == "40%/60% CPU/GPU"
+    assert rows[0]["context"] == "4096/8192"
+    assert rows[0]["until"] == "2 minutes ago"
+
+
+def test_parse_ollama_ps_stray_line_skipped_with_minimal_columns():
+    """A caption-like line after the header is not a data row."""
+    stdout = "NAME            ID\nnot a model row\nqwen3:8b        abc123\n"
+    rows, _ = _call_parser(stdout)
+    assert len(rows) == 1
+    assert rows[0]["name"] == "qwen3:8b"
+    assert rows[0]["model_id"] == "abc123"
+
+
+def test_parse_ollama_ps_no_header_returns_empty():
+    rows, _ = _call_parser("not a header line\nqwen3:8b abc\n")
+    assert rows == []
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +292,37 @@ def test_snapshot_shape_has_required_fields():
         assert key in snap, f"missing {key}"
 
 
+def test_snapshot_reports_active_model_and_names_and_context(monkeypatch):
+    import jarvis.models.runtime_diagnostics as rd
+
+    monkeypatch.setattr(rd, "check_ollama_reachable", lambda base_url=None: (True, []))
+    monkeypatch.setattr(rd, "get_ollama_running_models", lambda base_url=None: ([], []))
+    monkeypatch.setattr(rd, "get_ollama_process_info", lambda: (
+        [{"name": "qwen2.5-coder:7b", "size": "5.2 GB", "processor": "100% GPU",
+          "context": "4096", "until": "4 minutes ago", "status": "", "model_id": "x"}], []
+    ))
+    monkeypatch.setattr(rd, "get_gpu_info", lambda: (None, []))
+    snap = get_runtime_snapshot()
+    assert snap["active_model"] == "qwen2.5-coder:7b"
+    assert snap["model"] == "qwen2.5-coder:7b"
+    assert snap["running_model_names"] == ["qwen2.5-coder:7b"]
+    assert snap["context_length"] == 4096
+    assert snap["running_models"][0]["name"] == "qwen2.5-coder:7b"
+
+
+def test_snapshot_context_length_falls_back_to_setting(monkeypatch):
+    import jarvis.models.runtime_diagnostics as rd
+
+    monkeypatch.setattr(rd.settings, "ollama_context_length", 2048)
+    monkeypatch.setattr(rd, "check_ollama_reachable", lambda base_url=None: (True, []))
+    monkeypatch.setattr(rd, "get_ollama_running_models", lambda base_url=None: ([], []))
+    monkeypatch.setattr(rd, "get_ollama_process_info", lambda: ([], []))
+    monkeypatch.setattr(rd, "get_gpu_info", lambda: (None, []))
+    snap = get_runtime_snapshot()
+    assert snap["context_length"] == 2048
+    assert snap["running_model_names"] == []
+
+
 def test_snapshot_configured_models_has_no_cloud_chain():
     snap = get_runtime_snapshot()
     cfg = snap["configured_models"]
@@ -207,6 +332,7 @@ def test_snapshot_configured_models_has_no_cloud_chain():
 
 def test_snapshot_processor_unknown_when_unreachable(monkeypatch):
     import jarvis.models.runtime_diagnostics as rd
+
     monkeypatch.setattr(rd, "check_ollama_reachable", lambda base_url=None: (False, ["unreachable"]))
     monkeypatch.setattr(rd, "get_ollama_running_models", lambda base_url=None: ([], []))
     monkeypatch.setattr(rd, "get_ollama_process_info", lambda: ([], ["cli missing"]))
@@ -218,6 +344,7 @@ def test_snapshot_processor_unknown_when_unreachable(monkeypatch):
 
 def test_snapshot_partial_offload_recommendation(monkeypatch):
     import jarvis.models.runtime_diagnostics as rd
+
     monkeypatch.setattr(rd, "check_ollama_reachable", lambda base_url=None: (True, []))
     monkeypatch.setattr(rd, "get_ollama_running_models", lambda base_url=None: ([], []))
     monkeypatch.setattr(rd, "get_ollama_process_info", lambda: (
@@ -231,6 +358,7 @@ def test_snapshot_partial_offload_recommendation(monkeypatch):
 
 def test_snapshot_multiple_models_recommendation(monkeypatch):
     import jarvis.models.runtime_diagnostics as rd
+
     monkeypatch.setattr(rd, "check_ollama_reachable", lambda base_url=None: (True, []))
     monkeypatch.setattr(rd, "get_ollama_running_models", lambda base_url=None: (
         [{"name": "a", "size": 1, "expires_at": ""}, {"name": "b", "size": 1, "expires_at": ""}], []

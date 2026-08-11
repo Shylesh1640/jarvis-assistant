@@ -6,21 +6,27 @@ can surface partial information instead of crashing. Nothing here
 exposes API keys or private document content.
 
 Processor-split classification:
-    "100% GPU"              — model fully offloaded to GPU
+    "100% GPU"              — model fully offloaded to GPU (only when Ollama
+                               literally reports an all-GPU split — we never
+                               guess or over-claim)
     "Partial CPU/GPU"       — some layers on GPU, some on CPU
     "100% CPU"               — no GPU offload
     "Unknown"                — Ollama unreachable / no model loaded / can't tell
 
 Windows approach:
-    * ``ollama ps`` -> NAME / ID / SIZE / PROCESSOR / STATUS
+    * ``ollama ps`` -> NAME / ID / SIZE / PROCESSOR (0.31 also has CONTEXT /
+      UNTIL; the parser tolerates any subset of columns and never requires a
+      STATUS column)
     * ``nvidia-smi --query-gpu=...`` for VRAM when available
-    * Ollama HTTP ``/api/ps`` and ``/api/version`` as a fallback
+    * Ollama HTTP ``GET /api/ps`` (with a POST fallback for older builds) and
+      ``/api/version`` as a fallback
 
 The structured snapshot shape (``get_runtime_snapshot``):
 
     {
       "ollama_reachable": bool,
       "model": str,                 # actually-loaded model, NOT configured name
+      "active_model": str,          # alias of ``model`` (canonical UI field)
       "processor": "100% GPU" | "Partial CPU/GPU" | "100% CPU" | "Unknown",
       "gpu_name": str | None,
       "vram_total_mb": int | None,
@@ -28,7 +34,9 @@ The structured snapshot shape (``get_runtime_snapshot``):
       "system_ram_used_mb": int | None,
       "warnings": list[str],
       "ollama_version": str | None,
-      "running_models": list[dict],
+      "running_models": list[dict],       # rich rows (name/size/expires_at)
+      "running_model_names": list[str],   # canonical list of model names
+      "context_length": int,              # model's CONTEXT if reported, else cfg
       "configured_models": dict,    # only non-secret names from settings
       "context": dict,              # num_ctx / num_batch / cap settings
       "parallel": dict,             # num_parallel / max_loaded_models
@@ -82,36 +90,54 @@ def get_ollama_version(base_url: str | None = None) -> str | None:
 def get_ollama_running_models(base_url: str | None = None) -> tuple[list[dict], list[str]]:
     """Return (running_models, warnings) using the HTTP /api/ps endpoint.
 
-    Each item: {"name": str, "size": int (bytes), "expires_at": str}
+    Primary request uses ``GET`` — Ollama 0.31 serves ``/api/ps`` on GET.
+    A ``POST`` fallback keeps compatibility with older builds that only
+    accepted POST. Each item: {"name": str, "size": int (bytes),
+    "expires_at": str}
     """
     url = (base_url or settings.ollama_base_url).rstrip("/")
+    response = None
+    last_err: str | None = None
     try:
-        r = httpx.post(f"{url}/api/ps", timeout=_HTTP_TIMEOUT, json={})
-        if r.status_code == 200:
-            data = r.json() or {}
-            models = data.get("models") or []
-            out = []
-            for m in models:
-                out.append({
-                    "name": m.get("name") or m.get("model") or "",
-                    "size": int(m.get("size") or 0),
-                    "expires_at": m.get("expires_at") or "",
-                })
-            if len(models) > settings.ollama_max_loaded_models:
-                return out, [
-                    f"Ollama has {len(models)} models loaded but OLLAMA_MAX_LOADED_MODELS={settings.ollama_max_loaded_models}."
-                ]
-            return out, []
-        return [], [f"Ollama /api/ps returned HTTP {r.status_code}"]
+        response = httpx.get(f"{url}/api/ps", timeout=_HTTP_TIMEOUT)
     except Exception as exc:  # noqa: BLE001
-        return [], [f"Ollama /api/ps failed: {exc.__class__.__name__}"]
+        last_err = exc.__class__.__name__
+        # Older Ollama servers rejected GET /api/ps (405) — retry with POST.
+        try:
+            response = httpx.post(f"{url}/api/ps", timeout=_HTTP_TIMEOUT, json={})
+        except Exception as exc2:  # noqa: BLE001
+            return [], [f"Ollama /api/ps failed: {exc2.__class__.__name__}"]
+    if response.status_code == 200:
+        try:
+            data = response.json() if response.content else {}
+        except Exception:  # noqa: BLE001 — malformed body → safe empty result
+            return [], ["Ollama /api/ps returned malformed JSON"]
+        models = (data or {}).get("models") or []
+        out = []
+        for m in models:
+            out.append({
+                "name": m.get("name") or m.get("model") or "",
+                "size": int(m.get("size") or 0),
+                "expires_at": m.get("expires_at") or "",
+            })
+        if len(models) > settings.ollama_max_loaded_models:
+            return out, [
+                f"Ollama has {len(models)} models loaded but OLLAMA_MAX_LOADED_MODELS={settings.ollama_max_loaded_models}."
+            ]
+        return out, []
+    if last_err:
+        return [], [f"Ollama /api/ps failed: {last_err}"]
+    return [], [f"Ollama /api/ps returned HTTP {response.status_code}"]
 
 
 def get_ollama_process_info() -> tuple[list[dict], list[str]]:
-    """Run ``ollama ps`` and parse the PROCESSOR column.
+    """Run ``ollama ps`` and parse the loaded-model columns.
 
-    Returns (rows, warnings) where each row is:
-        {"name": str, "size": str, "processor": str, "status": str}
+    Returns (rows, warnings) where each row is a dict with the columns the
+    installed Ollama build printed (at minimum ``name``; optionally
+    ``size``/``processor``/``context``/``until``/``status``/``model_id``).
+    Works with the Ollama 0.31 column set — which drops ``STATUS`` and adds
+    ``CONTEXT``/``UNTIL`` — as well as older variants.
     """
     if shutil.which("ollama") is None:
         return [], ["`ollama` CLI not found on PATH."]
@@ -130,50 +156,94 @@ def get_ollama_process_info() -> tuple[list[dict], list[str]]:
     return _parse_ollama_ps(proc.stdout), []
 
 
-_PS_HEADER = re.compile(r"NAME\s+ID\s+SIZE\s+PROCESSOR\s+STATUS", re.IGNORECASE)
+# Column names the parser understands, in left-to-right display order. Any
+# subset may appear; a missing column yields a safe empty/default value.
+_PS_COLUMNS = ("NAME", "ID", "SIZE", "PROCESSOR", "CONTEXT", "UNTIL", "STATUS")
 
 
 def _parse_ollama_ps(stdout: str) -> list[dict]:
     """Parse `ollama ps` output rows into structured dicts.
 
-    Uses column offsets from the header line so multi-word values (SIZE =
-    "5.2 GB", PROCESSOR = "40%/60% CPU/GPU") are split correctly.
+    Locates the header line by the presence of a known column token, then
+    slices each data row by the header column offsets so multi-word values
+    (SIZE = "5.2 GB", PROCESSOR = "40%/60% CPU/GPU", UNTIL = "4 minutes
+    ago") are split correctly. No STATUS column is required: whichever of
+    the known columns exist in the header are parsed, and everything else
+    falls back to a safe value instead of raising.
     """
     lines = [ln for ln in stdout.splitlines() if ln.strip()]
     rows: list[dict] = []
     if not lines:
         return rows
-    header_idx = 0
-    for i, ln in enumerate(lines):
-        if _PS_HEADER.search(ln):
-            header_idx = i
-            break
-    header = lines[header_idx]
-    # Find column start indices for NAME, ID, SIZE, PROCESSOR, STATUS.
-    cols = {}
-    for col in ("NAME", "ID", "SIZE", "PROCESSOR", "STATUS"):
-        idx = header.upper().find(col)
-        if idx == -1:
-            return rows  # can't parse
-        cols[col] = idx
+
+    header_idx, header = _find_ps_header(lines)
+    if header_idx is None:
+        return rows
+
+    spans = _column_spans(header)
+    if not spans:
+        return rows
+
     for ln in lines[header_idx + 1:]:
-        if len(ln) < cols["STATUS"]:
+        row: dict = _row_from_line(ln, spans)
+        name = row.get("name", "")
+        if not name:
             continue
-        # Each field spans from its column start to the next column start.
-        name = ln[cols["NAME"]:cols["ID"]].strip()
-        model_id = ln[cols["ID"]:cols["SIZE"]].strip()
-        size = ln[cols["SIZE"]:cols["PROCESSOR"]].strip()
-        processor = ln[cols["PROCESSOR"]:cols["STATUS"]].strip()
-        status = ln[cols["STATUS"]:].strip()
-        if not name or not model_id:
-            continue
-        rows.append({
-            "name": name,
-            "size": size,
-            "processor": processor,
-            "status": status,
-        })
+        other_fields = {k: v for k, v in row.items() if k != "name" and isinstance(v, str) and v}
+        if ":" not in name and not other_fields:
+            continue  # not a structured data row (e.g. a stray caption line)
+        rows.append(row)
     return rows
+
+
+def _find_ps_header(lines: list[str]) -> tuple[int | None, str]:
+    """Return (index, text) of the `ollama ps` header line, or (None, "")."""
+    for i, ln in enumerate(lines):
+        if "NAME" in ln.upper() or "PROCESSOR" in ln.upper():
+            return i, ln
+    return None, ""
+
+
+def _column_spans(header: str) -> list[tuple[str, int]]:
+    """Return sorted [(column_name, start_index)] from the header text.
+
+    Uses word-boundary matching so a column like ``ID`` is never found as a
+    substring of another header word. Columns absent from the header are
+    simply not returned.
+    """
+    upper = header.upper()
+    spans: list[tuple[str, int]] = []
+    for col in _PS_COLUMNS:
+        m = re.search(rf"\b{re.escape(col)}\b", upper)
+        if m:
+            spans.append((col, m.start()))
+    return sorted(spans, key=lambda t: t[1])
+
+
+def _row_from_line(line: str, spans: list[tuple[str, int]]) -> dict:
+    """Slice *line* by column offsets and produce a safe row dict."""
+    fields: dict[str, str] = {}
+    for i, (col, start) in enumerate(spans):
+        end = spans[i + 1][1] if i + 1 < len(spans) else None
+        fields[col] = line[start:end].strip() if end is not None else line[start:].strip()
+
+    return {
+        "name": fields.get("NAME", ""),
+        "model_id": fields.get("ID", ""),
+        "size": fields.get("SIZE", ""),
+        "processor": fields.get("PROCESSOR", ""),
+        "context": fields.get("CONTEXT", ""),
+        "until": fields.get("UNTIL", ""),
+        "status": fields.get("STATUS", ""),
+    }
+
+
+def _parse_context_int(field: str) -> int | None:
+    """Pull the first integer out of a CONTEXT column value, or None."""
+    if not field:
+        return None
+    m = re.search(r"\d+", field)
+    return int(m.group()) if m else None
 
 
 def get_gpu_info() -> tuple[dict | None, list[str]]:
@@ -227,21 +297,25 @@ def classify_processor(processor_str: str) -> str:
     """Classify a processor string like '100% GPU' / '40%/60% CPU/GPU' / '100% CPU'.
 
     Returns one of: "100% GPU", "Partial CPU/GPU", "100% CPU", "Unknown".
+
+    ``"100% GPU"`` is claimed **only** when Ollama literally reports an
+    all-GPU split. Anything that mentions CPU alongside GPU, or a GPU
+    percentage below 100, is honestly classified as partial — we never
+    over-claim full GPU offload.
     """
     s = (processor_str or "").strip().lower()
     if not s:
         return "Unknown"
-    if "gpu" in s and "cpu" not in s:
-        if "100%" in s:
-            return "100% GPU"
-        # e.g. "90% GPU" still best-effort full GPU
-        return "100% GPU"
-    if "cpu" in s and "gpu" not in s:
-        return "100% CPU"
-    if "cpu" in s and "gpu" in s:
+    mentions_gpu = "gpu" in s
+    mentions_cpu = "cpu" in s
+    if mentions_gpu and mentions_cpu:
         return "Partial CPU/GPU"
-    if "100%" in s and "gpu" in s:
-        return "100% GPU"
+    if mentions_gpu:
+        if "100% gpu" in s or s in ("gpu", "100%gpu"):
+            return "100% GPU"
+        return "Partial CPU/GPU"  # e.g. "90% GPU" → 10% is on CPU
+    if mentions_cpu:
+        return "100% CPU"
     return "Unknown"
 
 
@@ -271,14 +345,18 @@ def get_runtime_snapshot() -> dict[str, Any]:
     # The actually-loaded model is the first row of `ollama ps` (or /api/ps).
     loaded_model = ""
     processor_raw = ""
+    context_raw = ""
     if ps_rows:
         loaded_model = ps_rows[0].get("name", "")
         processor_raw = ps_rows[0].get("processor", "")
+        context_raw = ps_rows[0].get("context", "")
     elif running:
         loaded_model = running[0].get("name", "")
     processor = classify_processor(processor_raw)
     if not reachable:
         processor = "Unknown"
+
+    running_names = [m.get("name", "") for m in (running or ps_rows) if m.get("name")]
 
     recommendations = _recommendations(
         reachable=reachable,
@@ -291,6 +369,7 @@ def get_runtime_snapshot() -> dict[str, Any]:
         "ollama_reachable": reachable,
         "ollama_version": version,
         "model": loaded_model,
+        "active_model": loaded_model,
         "processor": processor,
         "processor_raw": processor_raw,
         "gpu_name": gpu.get("gpu_name") if gpu else None,
@@ -300,6 +379,8 @@ def get_runtime_snapshot() -> dict[str, Any]:
         "warnings": warnings,
         "recommendations": recommendations,
         "running_models": running or ps_rows,
+        "running_model_names": running_names,
+        "context_length": _parse_context_int(context_raw) or settings.ollama_context_length,
         "configured_models": {
             "general": settings.general_model,
             "strong_local": settings.strong_local_model,

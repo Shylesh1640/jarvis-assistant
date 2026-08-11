@@ -14,6 +14,7 @@ from jarvis.api.schemas.chat import ChatRequest, ChatResponse
 from jarvis.guardrails.input_guard import validate_input
 from jarvis.guardrails.output_guard import redact_output
 from jarvis.memory.summaries import maybe_summarize
+from jarvis.orchestration.approval_node import approval_is_expired
 from jarvis.orchestration.branches import (
     OllamaModelLoadError,
     OllamaOutOfMemoryError,
@@ -128,6 +129,13 @@ def chat(payload: ChatRequest) -> ChatResponse:
             finish_trace(tr)
             raise HTTPException(
                 status_code=400, detail="No pending approval for this session"
+            )
+        if approval_is_expired(prev_state):
+            trace_event(tr, "approval_resume_expired")
+            finish_trace(tr)
+            raise HTTPException(
+                status_code=410,
+                detail="This approval has expired. Ask again to restart the action.",
             )
         trace_event(tr, "approval_resume")
         prev_state["approved"] = True
@@ -275,6 +283,9 @@ def _build_response(session_id: str, result: dict) -> ChatResponse:
         model_used=result.get("selected_model"),
         approval_required=result.get("approval_required", False),
         pending_action=result.get("pending_action"),
+        pending_tool_calls=list(result.get("pending_tool_calls", [])),
+        approval_id=result.get("approval_id"),
+        approval_expires_at=result.get("approval_expires_at"),
         tools_used=list(result.get("tools_used", [])),
         sources=list(result.get("sources", [])),
         retrieved_context=result.get("retrieved_context", "") or None,

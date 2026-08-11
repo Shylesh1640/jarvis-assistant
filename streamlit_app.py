@@ -17,7 +17,9 @@ A modern, dark-themed chat UI on top of the FastAPI backend:
 from __future__ import annotations
 
 import logging
+import os
 import time
+from datetime import datetime, timezone
 
 import httpx
 import streamlit as st
@@ -25,7 +27,7 @@ import streamlit as st
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("streamlit")
 
-BASE_URL = "http://localhost:8000"
+BASE_URL = os.environ.get("BACKEND_URL", "http://localhost:8000")
 API_URL = f"{BASE_URL}/chat"
 HEALTH_URL = f"{BASE_URL}/health"
 MODELS_URL = f"{BASE_URL}/models"
@@ -170,6 +172,12 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "pending_action" not in st.session_state:
     st.session_state.pending_action = None
+if "pending_tool_calls" not in st.session_state:
+    st.session_state.pending_tool_calls = []
+if "approval_id" not in st.session_state:
+    st.session_state.approval_id = None
+if "approval_expires_at" not in st.session_state:
+    st.session_state.approval_expires_at = None
 if "pending_selection" not in st.session_state:
     st.session_state.pending_selection = ""
 if "selection_target_index" not in st.session_state:
@@ -186,6 +194,13 @@ if "toggles" not in st.session_state:
 def _clear_selection() -> None:
     st.session_state.pending_selection = ""
     st.session_state.selection_target_index = None
+
+
+def _clear_pending_approval() -> None:
+    st.session_state.pending_action = None
+    st.session_state.pending_tool_calls = []
+    st.session_state.approval_id = None
+    st.session_state.approval_expires_at = None
 
 
 def _assistant_record(answer: str, data: dict) -> dict:
@@ -302,9 +317,12 @@ def _send_message(
 
                 if data.get("approval_required"):
                     st.session_state.pending_action = data.get("pending_action")
+                    st.session_state.pending_tool_calls = list(data.get("pending_tool_calls") or [])
+                    st.session_state.approval_id = data.get("approval_id")
+                    st.session_state.approval_expires_at = data.get("approval_expires_at")
                     logger.info("Approval required: %s", data.get("pending_action"))
                 else:
-                    st.session_state.pending_action = None
+                    _clear_pending_approval()
             except httpx.TimeoutException:
                 answer = "This request is taking too long in interactive mode. Toggle 'Run as background task' for heavy prompts."
                 st.error(answer, icon=":material/schedule:")
@@ -356,6 +374,73 @@ def _run_background_task(description: str) -> None:
                 "approval_required": False,
             }
     st.session_state.messages.append(record)
+
+
+def _seconds_until(expires_at: str | None) -> int | None:
+    """Whole seconds remaining until *expires_at* (ISO-8601), or None if unknown."""
+    if not expires_at:
+        return None
+    try:
+        dt = datetime.fromisoformat(expires_at)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0, int((dt - datetime.now(timezone.utc)).total_seconds()))
+    except ValueError:
+        return None
+
+
+@st.fragment(run_every=1)
+def _render_approval_card() -> None:
+    """Inline card showing exactly what Jarvis wants to run.
+
+    Lists each pending tool call (name + args), shows a live TTL countdown,
+    and disables approval once the expiry has passed so the backend's 410
+    guard and the UI never disagree.
+    """
+    remaining = _seconds_until(st.session_state.approval_expires_at)
+    expired = remaining == 0
+
+    with st.container(border=True):
+        st.markdown("**:material/lock: Approval required**")
+        action = st.session_state.pending_action or "perform an action"
+        st.markdown(f"Jarvis wants to: `{action}`")
+
+        tool_calls = st.session_state.pending_tool_calls or []
+        if tool_calls:
+            st.markdown("**Pending tool calls**")
+            for tc in tool_calls:
+                name = tc.get("name", "?")
+                args = tc.get("args", {}) or {}
+                arg_str = ", ".join(f"{k}={v!r}" for k, v in args.items()) or "(no args)"
+                st.code(f"{name}({arg_str})", language="text")
+
+        if st.session_state.approval_id:
+            st.caption(f"Approval ID: `{st.session_state.approval_id[:8]}…`")
+
+        if expired:
+            st.error(
+                "This approval has expired. Re-ask Jarvis to try again.",
+                icon=":material/expired:",
+            )
+            if st.button("Dismiss", icon=":material/close:"):
+                _clear_pending_approval()
+                st.rerun()
+            return
+
+        if remaining is not None:
+            st.caption(f"Expires in {remaining}s")
+        with st.container(horizontal=True):
+            if st.button("Approve", type="primary", icon=":material/check:"):
+                logger.info("User approved action: %s", st.session_state.pending_action)
+                _clear_pending_approval()
+                _send_message("", approved=True)
+                st.rerun()
+            if st.button("Deny", icon=":material/block:"):
+                st.session_state.messages.append(
+                    {"role": "assistant", "content": "Action cancelled by user."}
+                )
+                _clear_pending_approval()
+                st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -486,7 +571,7 @@ with st.sidebar:
 
     if st.button("Clear conversation", icon=":material/delete:"):
         st.session_state.messages = []
-        st.session_state.pending_action = None
+        _clear_pending_approval()
         st.session_state.pending_selection = ""
         st.session_state.selection_target_index = None
         st.rerun()
@@ -626,22 +711,7 @@ if latest_assistant_idx is not None and not st.session_state.pending_action:
 # ---------------------------------------------------------------------------
 
 if st.session_state.pending_action:
-    st.warning(
-        f"Jarvis wants to: {st.session_state.pending_action}",
-        icon=":material/warning:",
-    )
-    with st.container(horizontal=True):
-        if st.button("Approve", type="primary", icon=":material/check:"):
-            logger.info("User approved action: %s", st.session_state.pending_action)
-            st.session_state.pending_action = None
-            _send_message("", approved=True)
-            st.rerun()
-        if st.button("Deny", icon=":material/block:"):
-            st.session_state.messages.append(
-                {"role": "assistant", "content": "Action cancelled by user."}
-            )
-            st.session_state.pending_action = None
-            st.rerun()
+    _render_approval_card()
 
 # ---------------------------------------------------------------------------
 # Main chat input

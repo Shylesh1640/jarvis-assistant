@@ -164,6 +164,27 @@ def test_approval_resume_without_pending_returns_400(client):
     assert "No pending approval" in r.json()["detail"]
 
 
+def test_approval_resume_after_expiry_returns_410(client, monkeypatch):
+    # Seed a pending approval whose TTL already elapsed (ISO-8601 UTC).
+    import datetime
+
+    past = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=1)).isoformat()
+    routes.chat._pending_approvals["s1"] = {
+        "user_input": "do it",
+        "approval_required": True,
+        "approval_expires_at": past,
+    }
+    graph: _StubGraph = routes.chat.jarvis_graph
+    graph.invoke_handler = _default_invoke
+    r = client.post(
+        "/chat", json={"session_id": "s1", "message": "", "approved": True}
+    )
+    assert r.status_code == 410
+    assert "expired" in r.json()["detail"]
+    # The expired approval was consumed and must not resume.
+    assert "s1" not in routes.chat._pending_approvals
+
+
 def test_fresh_message_clears_stale_pending_approval(client, monkeypatch):
     # Seed a pending approval for session "s1".
     routes.chat._pending_approvals["s1"] = {"user_input": "old"}
