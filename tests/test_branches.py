@@ -23,8 +23,8 @@ from jarvis.orchestration.branches import (
 _DEFAULTS = dict(
     general_model="qwen3:8b",
     strong_local_model="qwen3:14b",
-    coding_model="qwen3-coder:30b",
-    coding_model_small="qwen2.5-coder:7b",
+    coding_model="qwen2.5-coder:7b-q5_K_M",
+    coding_model_small="qwen2.5-coder:7b-q5_K_M",
     use_strong_local=True,
     # Backing field for the `complex_models` property (comma-separated).
     complex_model_chain="anthropic/claude-opus-4.1",
@@ -88,9 +88,9 @@ def test_coding_branch_uses_small_coder_for_easy(configured_settings, fake_ollam
     state = _state("write a function to reverse a string",
                    intent="coding", complexity="easy")
     run_coding_branch(state)
-    assert state["selected_model"] == "qwen2.5-coder:7b"
+    assert state["selected_model"] == "qwen2.5-coder:7b-q5_K_M"
     assert state["selected_path"] == "coding"
-    assert fake_ollama.instances[-1].model == "qwen2.5-coder:7b"
+    assert fake_ollama.instances[-1].model == "qwen2.5-coder:7b-q5_K_M"
 
 
 def test_coding_branch_uses_strong_coder_for_difficult(configured_settings, fake_ollama):
@@ -99,8 +99,8 @@ def test_coding_branch_uses_strong_coder_for_difficult(configured_settings, fake
         intent="coding", complexity="difficult",
     )
     run_coding_branch(state)
-    assert state["selected_model"] == "qwen3-coder:30b"
-    assert fake_ollama.instances[-1].model == "qwen3-coder:30b"
+    assert state["selected_model"] == "qwen2.5-coder:7b-q5_K_M"
+    assert fake_ollama.instances[-1].model == "qwen2.5-coder:7b-q5_K_M"
 
 
 def test_coding_branch_forwards_selected_text_into_prompt(configured_settings, fake_ollama):

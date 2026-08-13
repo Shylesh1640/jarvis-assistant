@@ -22,8 +22,8 @@ from jarvis.orchestration.branches import (
 _DEFAULTS = dict(
     general_model="qwen3:8b",
     strong_local_model="qwen3:14b",
-    coding_model="qwen3-coder:30b",
-    coding_model_small="qwen2.5-coder:7b",
+    coding_model="qwen2.5-coder:7b-q5_K_M",
+    coding_model_small="qwen2.5-coder:7b-q5_K_M",
     use_strong_local=True,
     complex_model_chain="anthropic/claude-opus-4.1",
 )
@@ -69,7 +69,7 @@ def test_general_branch_picks_strong_local_for_difficult(configured_settings, fa
 def test_coding_branch_records_model_and_reason(configured_settings, fake_ollama):
     state = _state("write a function", intent="coding", complexity="easy")
     run_coding_branch(state)
-    assert state["selected_model"] == "qwen2.5-coder:7b"
+    assert state["selected_model"] == "qwen2.5-coder:7b-q5_K_M"
     assert "coding branch" in state["selection_reason"]
 
 

@@ -16,7 +16,7 @@ def test_build_context_skips_when_no_documents(monkeypatch):
     monkeypatch.setattr(
         ctx_mod,
         "query_context",
-        lambda q, k, with_sources=False: captured.append(q) or (("", []) if with_sources else ""),
+        lambda q, k, score_threshold=None, with_sources=False: captured.append(q) or (("", []) if with_sources else ""),
     )
     state = {"user_input": "anything", "selected_text": ""}
     out = build_context(state)
@@ -29,7 +29,7 @@ def test_build_context_skips_when_no_documents(monkeypatch):
 def test_build_context_retrieves_and_stores(monkeypatch):
     monkeypatch.setattr(ctx_mod, "has_documents", lambda: True)
 
-    def _stub_query(query, k, with_sources=False):
+    def _stub_query(query, k, score_threshold=None, with_sources=False):
         ctx = f"[ctx for: {query}]"
         return (ctx, [{"source": "x", "chunk_id": "1", "doc": "..."}]) if with_sources else ctx
 
@@ -48,7 +48,7 @@ def test_build_context_includes_selected_text_in_query(monkeypatch):
 
     seen: list[str] = []
 
-    def _capture(query, k, with_sources=False):
+    def _capture(query, k, score_threshold=None, with_sources=False):
         seen.append(query)
         return (f"ctx for {query}", []) if with_sources else f"ctx for {query}"
 
@@ -67,7 +67,7 @@ def test_build_context_includes_selected_text_in_query(monkeypatch):
 
 def test_build_context_handles_no_input(monkeypatch):
     monkeypatch.setattr(ctx_mod, "has_documents", lambda: True)
-    monkeypatch.setattr(ctx_mod, "query_context", lambda q, k, with_sources=False: ("", []) if with_sources else "")
+    monkeypatch.setattr(ctx_mod, "query_context", lambda q, k, score_threshold=None, with_sources=False: ("", []) if with_sources else "")
     # Empty user_input + empty selected_text -> build_retrieval_query is "".
     # build_context leaves retrieved_context empty.
     state = {"user_input": "", "selected_text": ""}
@@ -78,7 +78,7 @@ def test_build_context_handles_no_input(monkeypatch):
 
 def test_build_context_does_not_mutate_other_state_keys(monkeypatch):
     monkeypatch.setattr(ctx_mod, "has_documents", lambda: True)
-    monkeypatch.setattr(ctx_mod, "query_context", lambda q, k, with_sources=False: ("ctx", []) if with_sources else "ctx")
+    monkeypatch.setattr(ctx_mod, "query_context", lambda q, k, score_threshold=None, with_sources=False: ("ctx", []) if with_sources else "ctx")
     state = {
         "user_input": "hi",
         "selected_text": "",
@@ -91,3 +91,35 @@ def test_build_context_does_not_mutate_other_state_keys(monkeypatch):
     assert out["history"] == [{"role": "user", "content": "hi"}]
     assert out["retrieved_context"] == "ctx"
     assert out["sources"] == []
+
+
+def test_build_context_passes_relevance_threshold(monkeypatch):
+    """The relevance gate is plumbed from settings into query_context."""
+    monkeypatch.setattr(ctx_mod, "has_documents", lambda: True)
+    seen: dict = {}
+
+    def _capture(query, k, score_threshold=None, with_sources=False):
+        seen["threshold"] = score_threshold
+        return ("ctx", []) if with_sources else "ctx"
+
+    monkeypatch.setattr(ctx_mod, "query_context", _capture)
+    monkeypatch.setattr(ctx_mod.settings, "rag_relevance_threshold", 0.45)
+
+    build_context({"user_input": "hi", "selected_text": ""})
+    assert seen["threshold"] == 0.45
+
+
+def test_build_context_threshold_zero_disables_gate(monkeypatch):
+    """rag_relevance_threshold=0 disables the gate (threshold -> None)."""
+    monkeypatch.setattr(ctx_mod, "has_documents", lambda: True)
+    seen: dict = {}
+
+    def _capture(query, k, score_threshold=None, with_sources=False):
+        seen["threshold"] = score_threshold
+        return ("ctx", []) if with_sources else "ctx"
+
+    monkeypatch.setattr(ctx_mod, "query_context", _capture)
+    monkeypatch.setattr(ctx_mod.settings, "rag_relevance_threshold", 0.0)
+
+    build_context({"user_input": "hi", "selected_text": ""})
+    assert seen["threshold"] is None

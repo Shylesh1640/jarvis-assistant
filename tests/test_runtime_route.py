@@ -23,12 +23,12 @@ def _fake_snapshot(**overrides):
         "configured_models": {
             "general": "qwen3:8b",
             "strong_local": "qwen3:14b",
-            "coding": "qwen2.5-coder:7b",
-            "coding_small": "qwen2.5-coder:7b",
+            "coding": "qwen2.5-coder:7b-q5_K_M",
+            "coding_small": "qwen2.5-coder:7b-q5_K_M",
             "embedding": "qwen3-embedding:latest",
         },
         "context": {
-            "num_ctx": 4096, "num_batch": 512,
+            "num_ctx": 8192, "num_batch": 512,
             "history_max_turns": 20, "context_token_budget": 12000,
             "rag_context_token_cap": 2048, "selected_text_token_cap": 1024,
             "retrieval_top_k": 5,

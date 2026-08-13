@@ -6,12 +6,14 @@ def test_defaults_are_conservative():
     s = Settings()
     assert s.ollama_num_parallel == 1
     assert s.ollama_max_loaded_models == 1
-    assert s.ollama_context_length == 4096
+    assert s.ollama_num_gpu == -1  # offload ALL layers -> pure GPU
+    assert s.ollama_context_length == 8192
     assert s.ollama_num_batch == 512
     assert s.ollama_keep_alive == "5m"
     assert s.ollama_kv_cache_type == "q8_0"
     assert s.ollama_flash_attention == 1
     assert s.gpu_optimization_enabled is True
+    assert s.rag_relevance_threshold == 0.5
 
 
 def test_validate_runtime_settings_clean_defaults():
@@ -59,6 +61,24 @@ def test_validate_runtime_settings_warns_on_empty_base_url():
     s = Settings(ollama_base_url="")
     warns = validate_runtime_settings(s)
     assert any("OLLAMA_BASE_URL" in w for w in warns)
+
+
+def test_validate_runtime_settings_warns_on_num_gpu_zero():
+    s = Settings(ollama_num_gpu=0)
+    warns = validate_runtime_settings(s)
+    assert any("OLLAMA_NUM_GPU" in w for w in warns)
+
+
+def test_validate_runtime_settings_warns_on_invalid_num_gpu():
+    s = Settings(ollama_num_gpu=-5)
+    warns = validate_runtime_settings(s)
+    assert any("OLLAMA_NUM_GPU" in w for w in warns)
+
+
+def test_validate_runtime_settings_warns_on_bad_relevance_threshold():
+    s = Settings(rag_relevance_threshold=5.0)
+    warns = validate_runtime_settings(s)
+    assert any("RELEVANCE_THRESHOLD" in w for w in warns)
 
 
 def test_filter_supported_options_drops_unknown_keys():

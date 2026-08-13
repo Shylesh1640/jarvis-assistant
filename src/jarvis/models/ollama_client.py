@@ -5,9 +5,10 @@ is always taken from settings (or explicitly chosen by the model selector)
 and is never overridden by runtime options — runtime options only tune
 *how* the model runs (context window, batch, keep-alive), not *which* model.
 
-GPU offload is intentionally left to Ollama: we do NOT pass ``num_gpu``
-(hard-coding a GPU layer count could under-offload on a machine with more
-VRAM). Ollama picks the maximum valid GPU offload automatically.
+GPU execution is forced, never optional: we pass ``num_gpu=-1`` so Ollama
+offloads **every** layer to the GPU. The model therefore runs entirely in
+VRAM and never spills into system RAM; if it cannot fit in VRAM, Ollama
+refuses to load it rather than falling back to a partially-CPU execution.
 
 Lazy creation: each helper builds a fresh ``ChatOllama`` on demand. There is
 no module-level instantiation, so importing this module does NOT load any
@@ -38,6 +39,7 @@ def _runtime_options() -> dict:
         return {}
     opts: dict = {
         "num_ctx": settings.ollama_context_length,
+        "num_gpu": settings.ollama_num_gpu,  # -1 = offload ALL layers -> pure GPU, no RAM spill
         "temperature": 0.4,  # placeholder; caller overrides per-intent
         "keep_alive": settings.ollama_keep_alive,
     }

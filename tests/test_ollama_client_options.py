@@ -1,7 +1,8 @@
 """Tests for runtime-options wiring in ollama_client.
 
 Verifies that:
-- num_ctx / keep_alive / temperature are passed to ChatOllama.
+- num_ctx / num_gpu / keep_alive / temperature are passed to ChatOllama.
+- num_gpu defaults to -1, forcing full GPU offload (no system-RAM spill).
 - The model name is NEVER overridden by runtime options.
 - Disabling gpu_optimization_enabled yields no options block.
 - Unsupported keys are dropped (never silently mis-applied).
@@ -18,6 +19,7 @@ def test_runtime_options_include_num_ctx_when_enabled(monkeypatch):
     llm = _build("qwen3:8b", 0.4)
     assert llm.model == "qwen3:8b"
     assert llm.num_ctx == 8192
+    assert llm.num_gpu == -1
     assert llm.keep_alive == "10m"
     assert llm.temperature == 0.4
 
@@ -57,10 +59,20 @@ def test_get_general_uses_settings_general_model(monkeypatch):
     assert get_general_model().model == "qwen3:8b"
 
 
-def test_runtime_options_does_not_set_num_gpu(monkeypatch):
-    """GPU offload is left to Ollama — we never hard-code num_gpu."""
+def test_runtime_options_force_full_gpu_offload(monkeypatch):
+    """num_gpu=-1 is passed so every layer runs on the GPU (no RAM spill)."""
     monkeypatch.setattr(settings, "gpu_optimization_enabled", True)
     from jarvis.models.ollama_client import _build
 
     llm = _build("m", 0.4)
-    assert llm.num_gpu is None
+    assert llm.num_gpu == -1
+
+
+def test_runtime_options_honor_custom_num_gpu(monkeypatch):
+    """num_gpu stays configurable; -1 (all layers) is the default."""
+    monkeypatch.setattr(settings, "gpu_optimization_enabled", True)
+    monkeypatch.setattr(settings, "ollama_num_gpu", 24)
+    from jarvis.models.ollama_client import _build
+
+    llm = _build("m", 0.4)
+    assert llm.num_gpu == 24

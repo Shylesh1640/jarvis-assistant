@@ -399,11 +399,13 @@ def get_runtime_snapshot() -> dict[str, Any]:
             "rag_context_token_cap": settings.rag_context_token_cap,
             "selected_text_token_cap": settings.selected_text_token_cap,
             "retrieval_top_k": settings.retrieval_top_k,
+            "rag_relevance_threshold": settings.rag_relevance_threshold,
         },
         "parallel": {
             "num_parallel": settings.ollama_num_parallel,
             "max_loaded_models": settings.ollama_max_loaded_models,
             "gpu_optimization_enabled": settings.gpu_optimization_enabled,
+            "num_gpu": settings.ollama_num_gpu,
             "flash_attention": settings.ollama_flash_attention,
             "kv_cache_type": settings.ollama_kv_cache_type,
             "keep_alive": settings.ollama_keep_alive,

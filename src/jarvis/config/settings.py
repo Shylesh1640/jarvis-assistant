@@ -10,10 +10,10 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     ollama_base_url: str = "http://localhost:11434"
-    general_model: str = "qwen3:8b"
-    strong_local_model: str = "qwen3:14b"
-    coding_model: str = "qwen3-coder:30b"
-    coding_model_small: str = "qwen2.5-coder:7b"
+    general_model: str = "qwen3:8b"  # default Q4_K_M quantization
+    strong_local_model: str = "qwen3:14b"  # default Q4_K_M quantization (medium/difficult general)
+    coding_model: str = "qwen2.5-coder:7b-q5_K_M"  # 5-bit quantization to preserve syntax integrity
+    coding_model_small: str = "qwen2.5-coder:7b-q5_K_M"  # same 5-bit coder for easy coding tasks
     embedding_model: str = "qwen3-embedding:latest"
 
     # Whether to actually use the strong local model for medium/difficult
@@ -84,6 +84,14 @@ class Settings(BaseSettings):
     context_token_budget: int = 12000
     # Default number of chunks retrieved from the RAG store.
     retrieval_top_k: int = 5
+    # Relevance gate for the *automatic* RAG injection in build_context.
+    # Chroma reports cosine *distance* (0 = identical, ~1 = unrelated). Only
+    # chunks closer than this distance are injected, so a question unrelated
+    # to the stored docs gets NO context instead of an irrelevant chunk the
+    # model might answer about. 0 disables the gate (legacy behaviour).
+    # qwen3-embedding calibration: relevant ~0.05-0.35, irrelevant ~0.6+,
+    # so 0.5 cleanly separates them.
+    rag_relevance_threshold: float = 0.5
     # Weight (0..1) for the keyword-BM25 layer in hybrid retrieval. 0 = pure
     # vector similarity; 1 = pure keyword. 0.25 keeps semantic primacy but
     # boosts chunks with exact-term matches.
@@ -100,9 +108,17 @@ class Settings(BaseSettings):
     # Master switch; when False the runtime-options block below is skipped
     # and Ollama uses its server defaults.
     gpu_optimization_enabled: bool = True
-    # Context window size sent per request. Conservative default of 4096
-    # unless your config explicitly raises it.
-    ollama_context_length: int = 4096
+    # GPU offload: number of layers to place on the GPU. -1 means "offload
+    # EVERY layer", forcing 100% GPU execution so models never spill into
+    # system RAM. If the whole model cannot fit in VRAM, Ollama errors out
+    # instead of silently falling back to CPU. Set to 0 only to disable
+    # GPU (not recommended).
+    ollama_num_gpu: int = -1
+    # Context window size sent per request. Raised to 8192 so the sliding
+    # history + RAG context + tool-loop turns stay under num_ctx (prompts
+    # larger than num_ctx get truncated by Ollama). Reduce if KV cache
+    # pressure is high; raise only if VRAM comfortably allows it.
+    ollama_context_length: int = 8192
     # Batch size for prompt processing per request.
     ollama_num_batch: int = 512
     # Flash attention toggle (1 on / 0 off). This is a request option in
@@ -146,6 +162,8 @@ class Settings(BaseSettings):
         if not self.gpu_optimization_enabled:
             return {}
         opts: dict = {"num_ctx": self.ollama_context_length}
+        if self.ollama_num_gpu != 0:
+            opts["num_gpu"] = self.ollama_num_gpu
         if self.ollama_num_batch > 0:
             opts["num_batch"] = self.ollama_num_batch
         if self.ollama_flash_attention in (0, 1):
@@ -197,6 +215,15 @@ def validate_runtime_settings(s: "Settings | None" = None) -> list[str]:
         warnings.append("OLLAMA_BASE_URL is empty.")
     if s.ollama_num_parallel < 1:
         warnings.append("OLLAMA_NUM_PARALLEL must be >= 1; using single request lane.")
+    if s.ollama_num_gpu == 0:
+        warnings.append(
+            "OLLAMA_NUM_GPU=0 disables GPU offload (pure CPU). Set OLLAMA_NUM_GPU=-1 "
+            "to force full GPU execution and avoid spilling into system RAM."
+        )
+    if s.ollama_num_gpu not in (-1, 0) and s.ollama_num_gpu < 1:
+        warnings.append(
+            "OLLAMA_NUM_GPU must be -1 (offload all layers) or a positive layer count."
+        )
     if s.ollama_max_loaded_models > s.ollama_num_parallel:
         warnings.append(
             "OLLAMA_MAX_LOADED_MODELS > OLLAMA_NUM_PARALLEL may load spare"
@@ -214,6 +241,11 @@ def validate_runtime_settings(s: "Settings | None" = None) -> list[str]:
         warnings.append(f"OLLAMA_KV_CACHE_TYPE='{s.ollama_kv_cache_type}' may not be supported.")
     if s.rag_context_token_cap < 0 or s.selected_text_token_cap < 0:
         warnings.append("RAG / selected-text caps must be >= 0 (0 = unbounded).")
+    if not (0.0 <= s.rag_relevance_threshold <= 2.0):
+        warnings.append(
+            "RAG_RELEVANCE_THRESHOLD should be in (0, 1]; ~0.5 for qwen3-embedding. "
+            "0 disables the relevance gate."
+        )
     if s.history_max_turns < 1:
         warnings.append("HISTORY_MAX_TURNS < 1 disables history entirely.")
     return warnings

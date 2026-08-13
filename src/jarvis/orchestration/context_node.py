@@ -34,7 +34,12 @@ def build_context(state: JarvisState) -> JarvisState:
         state["sources"] = []
         return state
 
-    context, sources = query_context(query, k=settings.retrieval_top_k, with_sources=True)
+    context, sources = query_context(
+        query,
+        k=settings.retrieval_top_k,
+        score_threshold=settings.rag_relevance_threshold or None,
+        with_sources=True,
+    )
     state["retrieved_context"] = context
     state["sources"] = sources
     logger.info(

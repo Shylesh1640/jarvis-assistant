@@ -114,10 +114,12 @@ changing, quantizing, downgrading, renaming, or replacing your current model.**
 
 ### What it does
 
-- Passes request-level options (`num_ctx`, `num_batch`, `keep_alive`,
-  `temperature`) to every local `ChatOllama` call from settings.
-- Leaves **GPU offload to Ollama** — never hard-codes `num_gpu`. Ollama picks
-  the maximum valid GPU offload automatically.
+- Passes request-level options (`num_ctx`, `num_gpu`, `num_batch`,
+  `keep_alive`, `temperature`) to every local `ChatOllama` call from settings.
+- **Forces full GPU offload** with `num_gpu=-1`. Every layer is placed on the
+  GPU, so the model runs entirely in VRAM and **never spills into system RAM**;
+  if it cannot fit in VRAM, Ollama refuses to load it instead of falling back
+  to a partially-CPU execution.
 - Builds all model clients **lazily** (no models load at import/startup; at
   most one local generation model is active per request).
 - **Bounded context**: history is capped by `HISTORY_MAX_TURNS` +
@@ -232,9 +234,9 @@ All settings live in `src/jarvis/config/settings.py` and are loaded from
 | Variable | Default | Purpose |
 |---|---|---|
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Local model server |
-| `GENERAL_MODEL` | `qwen3:8b` | General chat |
-| `STRONG_LOCAL_MODEL` | `qwen3:14b` | Upgraded local model for medium/difficult tasks |
-| `CODING_MODEL` / `CODING_MODEL_SMALL` | `qwen3-coder:30b` / `qwen2.5-coder:7b` | Coding branch (hard / easy) |
+| `GENERAL_MODEL` | `qwen3:8b` | General chat (Q4_K_M) |
+| `STRONG_LOCAL_MODEL` | `qwen3:14b` | Medium/difficult general (Q4_K_M) |
+| `CODING_MODEL` / `CODING_MODEL_SMALL` | `qwen2.5-coder:7b-q5_K_M` / `qwen2.5-coder:7b-q5_K_M` | Coding branch (5-bit for syntax integrity) |
 | `EMBEDDING_MODEL` | `qwen3-embedding:latest` | Chroma embeddings |
 | `USE_STRONG_LOCAL` | `true` | Set `false` to keep general branch on `GENERAL_MODEL` |
 | `OPENROUTER_API_KEY` | _empty_ | Optional cloud fallback for the complex branch |
@@ -246,8 +248,10 @@ All settings live in `src/jarvis/config/settings.py` and are loaded from
 | `RETRIEVAL_TOP_K` | `5` | Default RAG chunk count |
 | `RAG_CONTEXT_TOKEN_CAP` | `2048` | Max tokens (word proxy) for retrieved RAG context block |
 | `SELECTED_TEXT_TOKEN_CAP` | `1024` | Max tokens for highlighted selected-text snippet |
+| `RAG_RELEVANCE_THRESHOLD` | `0.5` | Cosine-distance gate: only on-topic RAG chunks are auto-injected |
 | `GPU_OPTIMIZATION_ENABLED` | `true` | Master switch for request-level Ollama runtime options |
-| `OLLAMA_CONTEXT_LENGTH` | `4096` | `num_ctx` sent per request (conservative) |
+| `OLLAMA_NUM_GPU` | `-1` | Offload ALL layers to GPU (100% GPU, no system-RAM spill) |
+| `OLLAMA_CONTEXT_LENGTH` | `8192` | `num_ctx` sent per request |
 | `OLLAMA_NUM_BATCH` | `512` | `num_batch` prompt processing batch size |
 | `OLLAMA_FLASH_ATTENTION` | `1` | Request flash attention (requires Ollama >= 0.5) |
 | `OLLAMA_KV_CACHE_TYPE` | `q8_0` | KV cache quantization (q8_0 halves KV memory) |
