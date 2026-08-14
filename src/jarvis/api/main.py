@@ -39,6 +39,12 @@ def _startup() -> None:
     except Exception as exc:  # noqa: BLE001
         logging.getLogger("jarvis.api").warning("DB init failed: %s", exc)
     try:
+        from jarvis.tasks.maintenance import sweep_once
+
+        sweep_once()
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger("jarvis.api").warning("Startup maintenance sweep failed: %s", exc)
+    try:
         from jarvis.tasks.runner import recover_stale_tasks
 
         n = recover_stale_tasks()
@@ -52,10 +58,16 @@ def _startup() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Run one-time init on startup; no teardown required."""
+    """Run one-time init on startup; stop the sweeper on shutdown."""
     del app
     _startup()
+    from jarvis.tasks.maintenance import start_sweeper
+
+    start_sweeper()
     yield
+    from jarvis.tasks.maintenance import stop_sweeper
+
+    stop_sweeper()
 
 
 app = FastAPI(title="Jarvis Assistant API", version="0.2.0", lifespan=lifespan)

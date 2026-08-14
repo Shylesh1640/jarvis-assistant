@@ -63,6 +63,16 @@ class Settings(BaseSettings):
     sqlite_path: str = "./data/jarvis.db"
     # After how many (user, assistant) turns a conversation is summarized.
     summary_every_turns: int = 10
+    # Inactive sessions (no activity for this many days) are deleted by the
+    # periodic maintenance sweep. 0 disables session cleanup.
+    session_ttl_days: int = 7
+    # Expired approval rows are hard-deleted after this retention in *hours*
+    # (a TTL sweep flips them to ``expired``; older rows are physically
+    # removed to keep the table bounded). 0 deletes them on the next sweep.
+    expired_approval_retention_hours: int = 24
+    # How often the periodic maintenance sweep runs (seconds). 0 disables
+    # the sweep thread (startup-only cleanup).
+    maintenance_sweep_interval: int = 300
 
     # --- Error handling / retry ---
     # Retries for *transient* Ollama failures (server down mid-flight,

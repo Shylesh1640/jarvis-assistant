@@ -12,6 +12,10 @@ class ChatRequest(BaseModel):
     # this specific text.
     selected_text: str | None = None
     approved: bool = False
+    # When true, cancels a pending approval for the session (marks the
+    # durable row ``denied``) instead of resuming it. Backward-compatible:
+    # existing clients never set it.
+    deny: bool = False
     # UI toggles plumbed end-to-end through the graph state.
     show_reasoning: bool = False
     answer_style: str | None = None  # "concise" | "detailed" | "code"

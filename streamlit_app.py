@@ -265,6 +265,32 @@ def _clear_pending_approval() -> None:
     st.session_state.approval_expires_at = None
 
 
+def _deny_pending_approval() -> str | None:
+    """Tell the backend to mark this session's pending approval as denied.
+
+    Returns the confirmation text on success, or a fallback string on any
+    failure. The backend guarantees the durable row flips to ``denied`` so
+    a later approve cannot resume the cancelled action.
+    """
+    try:
+        r = httpx.post(
+            API_URL,
+            json={
+                "session_id": SESSION_ID,
+                "session_token": session_token(SESSION_ID),
+                "message": "",
+                "deny": True,
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        data = r.json()
+        return data.get("response") or "Action cancelled by user."
+    except Exception:  # noqa: BLE001
+        logger.debug("Deny request failed; cancelling locally")
+        return "Action cancelled by user."
+
+
 def _assistant_record(answer: str, data: dict) -> dict:
     """Persist metadata alongside an assistant reply so re-renders show it."""
     return {
@@ -595,8 +621,12 @@ def _render_approval_card() -> None:
                 _send_message("", approved=True)
                 st.rerun()
             if st.button("Deny", icon=":material/block:"):
+                result = _deny_pending_approval()
                 st.session_state.messages.append(
-                    {"role": "assistant", "content": "Action cancelled by user."}
+                    {
+                        "role": "assistant",
+                        "content": result or "Action cancelled by user.",
+                    }
                 )
                 _clear_pending_approval()
                 st.rerun()

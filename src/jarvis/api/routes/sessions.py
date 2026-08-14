@@ -33,6 +33,7 @@ def session_info(session_id: str) -> dict:
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "last_active_at": row.last_active_at.isoformat() if row.last_active_at else None,
         "has_token": bool(row.token),
+        "message_count": repos.sessions.message_count(session_id),
     }
 
 
@@ -46,6 +47,7 @@ def list_sessions(limit: int = Query(50, ge=1, le=500)) -> dict:
                 "user_id": r.user_id,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
                 "last_active_at": r.last_active_at.isoformat() if r.last_active_at else None,
+                "message_count": repos.sessions.message_count(r.id),
             }
             for r in rows
         ]

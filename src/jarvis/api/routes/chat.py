@@ -217,6 +217,35 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
 
     tr = new_trace(session_id=payload.session_id, approved=payload.approved)
 
+    # --- Approval deny ---
+    if payload.deny:
+        # Cancel any pending approval for this session — both the in-memory
+        # fast path and the durable row — and mark it ``denied`` so a later
+        # "approved" resume can never fire it.
+        prev_state = _pending_approvals.pop(payload.session_id, None)
+        if prev_state is None:
+            prev_state = _load_pending_approval(payload.session_id)
+        if prev_state is None:
+            trace_event(tr, "approval_deny_missing")
+            finish_trace(tr)
+            raise APIError(
+                400, "no_pending_approval", "No pending approval for this session."
+            )
+        approval_id = prev_state.get("approval_id")
+        if approval_id:
+            try:
+                _repos.approvals.set_status(approval_id, "denied")
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("marking denied approval failed: %s", exc)
+        trace_event(tr, "approval_denied")
+        finish_trace(tr)
+        return ChatResponse(
+            session_id=payload.session_id,
+            response="Action cancelled by user.",
+            path_used="approval",
+            approval_required=False,
+        )
+
     # --- Approval resume ---
     if payload.approved:
         prev_state = _pending_approvals.pop(payload.session_id, None)

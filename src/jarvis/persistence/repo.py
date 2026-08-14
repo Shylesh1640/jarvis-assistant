@@ -24,10 +24,17 @@ from jarvis.persistence.models import (
 
 class SessionRepo:
     def get_or_create(self, session_id: str, *, user_id: str | None = None) -> SessionRow:
+        from datetime import datetime, timezone
+
         with get_session() as s:
             row = s.get(SessionRow, session_id)
             if row is None:
-                row = SessionRow(id=session_id, user_id=user_id, token=_new_token())
+                row = SessionRow(
+                    id=session_id,
+                    user_id=user_id,
+                    token=_new_token(),
+                    last_active_at=datetime.now(timezone.utc),
+                )
                 s.add(row)
                 s.flush()
             elif user_id and not row.user_id:
@@ -59,10 +66,17 @@ class SessionRepo:
 
     def ensure_token(self, session_id: str, *, user_id: str | None = None) -> str:
         """Return the session's bearer token, creating the session if needed."""
+        from datetime import datetime, timezone
+
         with get_session() as s:
             row = s.get(SessionRow, session_id)
             if row is None:
-                row = SessionRow(id=session_id, user_id=user_id, token=_new_token())
+                row = SessionRow(
+                    id=session_id,
+                    user_id=user_id,
+                    token=_new_token(),
+                    last_active_at=datetime.now(timezone.utc),
+                )
                 s.add(row)
                 s.flush()
             if not row.token:
@@ -79,6 +93,40 @@ class SessionRepo:
             if row is None or not row.token:
                 return False
             return token == row.token
+
+    def message_count(self, session_id: str) -> int:
+        """Number of messages stored for *session_id* (for session metadata)."""
+        with get_session() as s:
+            return s.scalar(
+                select(func.count())
+                .select_from(MessageRow)
+                .where(MessageRow.session_id == session_id)
+            ) or 0
+
+    def purge_inactive(self, ttl_days: int, now=None) -> int:
+        """Delete sessions with no activity in the last *ttl_days* days.
+
+        Returns the number of rows deleted (cascades to their messages /
+        summaries / approvals via FK). ``ttl_days <= 0`` disables cleanup.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        if ttl_days <= 0:
+            return 0
+        if now is None:
+            now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(days=ttl_days)
+        with get_session() as s:
+            rows = s.scalars(
+                select(SessionRow).where(
+                    SessionRow.last_active_at.is_not(None),
+                    SessionRow.last_active_at < cutoff,
+                )
+            ).all()
+            for row in rows:
+                s.delete(row)
+            s.flush()
+            return len(rows)
 
 
 def _new_token() -> str:
@@ -325,6 +373,33 @@ class ApprovalRepo:
             ).all()
             for row in rows:
                 row.status = "expired"
+            return len(rows)
+
+    def delete_expired_older_than(self, retention_hours: int, now=None) -> int:
+        """Hard-delete ``expired`` rows past *retention_hours*.
+
+        Returns the number of rows deleted. Keeps the table bounded: rows
+        flipped by a TTL sweep linger only long enough to surface a 410 on
+        a stale resume (``get_expired``), then are physically removed.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        if now is None:
+            now = datetime.now(timezone.utc)
+        if retention_hours <= 0:
+            cutoff = now
+        else:
+            cutoff = now - timedelta(hours=retention_hours)
+        with get_session() as s:
+            rows = s.scalars(
+                select(ApprovalRow).where(
+                    ApprovalRow.status == "expired",
+                    ApprovalRow.expires_at < cutoff,
+                )
+            ).all()
+            for row in rows:
+                s.delete(row)
+            s.flush()
             return len(rows)
 
 

@@ -72,11 +72,18 @@ Approvals are **durable**: a pending tool call is written to the DB together
 with its TTL, so an interrupted run (browser refresh, backend restart) never
 loses the pending action. The UI shows an inline Approve / Deny card with a
 live countdown; your choice is sent back to `POST /chat` with the `approved`
-field set, and only the *exact* captured tool call executes. If the TTL has
-expired the server answers **410 Gone** so a stale approval can never fire.
+field set, and only the *exact* captured tool call executes. **Deny** marks
+the durable row `denied` server-side, so a later approve cannot replay the
+cancelled action. If the TTL has expired the server answers **410 Gone** so
+a stale approval can never fire. A periodic maintenance sweeper marks
+expired approvals `expired`, hard-deletes them after
+`EXPIRED_APPROVAL_RETENTION_HOURS`, and drops sessions inactive past
+`SESSION_TTL_DAYS`.
 
 Sessions are persisted too — a fresh message after a restart carries the old
-session forward instead of starting from scratch.
+session forward instead of starting from scratch. Each session exposes
+metadata (`created_at`, `last_active_at`, `message_count`) via
+`GET /sessions/{session_id}`.
 
 ### Per-session bearer tokens
 
@@ -347,6 +354,9 @@ All settings live in `src/jarvis/config/settings.py` and are loaded from
 | `RATE_LIMIT_PER_MINUTE` | `300` | Requests/minute per session/IP; `0` disables |
 | `REQUIRE_SESSION_TOKEN` | `false` | Require per-session bearer token on `/chat` + `/tasks` |
 | `JSON_LOGS_ENABLED` | `false` | Emit JSON-formatted logs for parsing |
+| `SESSION_TTL_DAYS` | `7` | Delete sessions inactive for this many days (`0` disables) |
+| `EXPIRED_APPROVAL_RETENTION_HOURS` | `24` | Hard-delete expired approval rows after this many hours |
+| `MAINTENANCE_SWEEP_INTERVAL` | `300` | Periodic maintenance sweep interval, seconds (`0` disables) |
 
 ## Project structure
 

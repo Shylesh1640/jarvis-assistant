@@ -84,9 +84,11 @@ TTL). The client shows an Approve / Deny card.
   (the `message`/`session_id` must be consistent). Only the captured calls
   execute — never an arbitrary action. A fresh `approved: false` message also
   cancels any lingering pending approval for the session.
-- **Deny**: client-side only — the UI clears its pending card and inserts a
-  "cancelled" message; no backend call is made. (For background tasks use
-  `POST /tasks/{id}/deny` instead.)
+- **Deny**: POST to `/chat` with `deny: true` (and the same `session_id`).
+  The durable approval row flips to `denied`, so a later `approved: true`
+  resume cannot replay the cancelled action; the response text is
+  "Action cancelled by user.". A missing pending approval yields
+  `400 no_pending_approval`.
 - **Expiry**: if the TTL has passed the server answers
   `410 approval_expired`; ask the question again to restart.
 
@@ -158,8 +160,20 @@ The token is per-session and stable across restarts (persisted in the DB).
 
 ### `GET /sessions/{session_id}`
 
-Session metadata (`created_at`, `last_active_at`, `has_token`). Errors:
-`404 session_not_found`.
+Session metadata:
+
+```json
+{
+  "session_id": "abc123",
+  "user_id": null,
+  "created_at": "…",
+  "last_active_at": "…",
+  "has_token": true,
+  "message_count": 12
+}
+```
+
+Errors: `404 session_not_found`.
 
 ### `GET /sessions?limit=50`
 

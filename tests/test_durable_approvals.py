@@ -210,6 +210,70 @@ def test_database_history_rebuilds_after_restart(client):
     assert routes.chat._sessions["hist-session"][0]["content"] == "remember this"
 
 
+def test_deny_marks_durable_row_denied(client):
+    """Chat deny flips the durable approval to ``denied`` so a later approve
+    cannot resume the cancelled action."""
+    repos.approvals.create(
+        "appv-deny",
+        session_id="restart-session",
+        state=_pending_state("appv-deny"),
+        expires_at=_pending_state("appv-deny")["approval_expires_at"],
+    )
+    routes.chat._pending_approvals.clear()
+
+    r = client.post(
+        "/chat",
+        json={
+            "message": "",
+            "session_id": "restart-session",
+            "deny": True,
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["response"] == "Action cancelled by user."
+
+    row = repos.approvals.get("appv-deny")
+    assert row is not None
+    assert row.status == "denied"
+
+
+def test_deny_with_no_pending_returns_400(client):
+    routes.chat._pending_approvals.clear()
+    r = client.post(
+        "/chat",
+        json={"message": "", "session_id": "restart-session", "deny": True},
+    )
+    assert r.status_code == 400
+    assert r.json()["error"] == "no_pending_approval"
+
+
+def test_denied_approval_cannot_be_resumed(client):
+    """After a deny, an approved resume must not fire the stored action."""
+    repos.approvals.create(
+        "appv-deny-resume",
+        session_id="restart-session",
+        state=_pending_state("appv-deny-resume"),
+        expires_at=_pending_state("appv-deny-resume")["approval_expires_at"],
+    )
+    routes.chat._pending_approvals.clear()
+
+    client.post(
+        "/chat",
+        json={"message": "", "session_id": "restart-session", "deny": True},
+    )
+
+    r = client.post(
+        "/chat",
+        json={
+            "message": "ignored",
+            "session_id": "restart-session",
+            "approved": True,
+        },
+    )
+    assert r.status_code == 400
+    assert r.json()["error"] == "no_pending_approval"
+
+
 def test_redacted_response_stored_in_db_history(client):
     repos.approvals.create(
         "appv-redact",

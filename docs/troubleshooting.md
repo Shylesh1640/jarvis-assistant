@@ -98,7 +98,10 @@ automatically (show **Trace/debug** for the sent token).
 ### `404 session_not_found`
 
 From `GET /sessions/{id}` only (the token endpoint creates the session on
-demand). The session row was never created, or the DB was wiped.
+demand). The session row was never created, or the DB was wiped. Sessions
+inactive past `SESSION_TTL_DAYS` (default 7) are also deleted by the
+periodic maintenance sweep — a session you haven't touched in a week is
+expected to disappear.
 
 ## Rate limiting
 
