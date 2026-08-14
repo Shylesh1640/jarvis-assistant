@@ -14,8 +14,8 @@ from sqlalchemy import desc, func, select
 
 from jarvis.persistence.engine import get_session
 from jarvis.persistence.models import (
+    ApprovalRow,
     MessageRow,
-    PendingApprovalRow,
     SessionRow,
     SummaryRow,
     TaskRow,
@@ -23,14 +23,29 @@ from jarvis.persistence.models import (
 
 
 class SessionRepo:
-    def get_or_create(self, session_id: str) -> SessionRow:
+    def get_or_create(self, session_id: str, *, user_id: str | None = None) -> SessionRow:
         with get_session() as s:
             row = s.get(SessionRow, session_id)
             if row is None:
-                row = SessionRow(id=session_id)
+                row = SessionRow(id=session_id, user_id=user_id, token=_new_token())
                 s.add(row)
                 s.flush()
+            elif user_id and not row.user_id:
+                row.user_id = user_id
+                s.flush()
             return row
+
+    def get(self, session_id: str) -> SessionRow | None:
+        with get_session() as s:
+            return s.get(SessionRow, session_id)
+
+    def list(self, limit: int = 100) -> list[SessionRow]:
+        with get_session() as s:
+            return list(
+                s.scalars(
+                    select(SessionRow).order_by(desc(SessionRow.last_active_at)).limit(limit)
+                ).all()
+            )
 
     def touch(self, session_id: str) -> None:
         from datetime import datetime, timezone
@@ -39,7 +54,37 @@ class SessionRepo:
             row = s.get(SessionRow, session_id)
             if row is not None:
                 row.updated_at = datetime.now(timezone.utc)
+                row.last_active_at = datetime.now(timezone.utc)
                 s.flush()
+
+    def ensure_token(self, session_id: str, *, user_id: str | None = None) -> str:
+        """Return the session's bearer token, creating the session if needed."""
+        with get_session() as s:
+            row = s.get(SessionRow, session_id)
+            if row is None:
+                row = SessionRow(id=session_id, user_id=user_id, token=_new_token())
+                s.add(row)
+                s.flush()
+            if not row.token:
+                row.token = _new_token()
+                s.flush()
+            return row.token
+
+    def is_token_valid(self, session_id: str, token: str | None) -> bool:
+        """True when *token* matches the stored token for *session_id*."""
+        if not token:
+            return False
+        with get_session() as s:
+            row = s.get(SessionRow, session_id)
+            if row is None or not row.token:
+                return False
+            return token == row.token
+
+
+def _new_token() -> str:
+    import secrets
+
+    return secrets.token_hex(16)
 
 
 class MessageRepo:
@@ -146,38 +191,141 @@ class SummaryRepo:
 
 
 class ApprovalRepo:
-    """Stores paused graph state so the API process can be restarted
-    between an approval request and the user's response without losing it.
+    """Durable pending-approval store.
+
+    A row is written when the graph pauses for approval and survives a
+    backend restart. ``get_pending`` / ``pop_pending`` are the resume
+    accessors; ``set_status`` transitions rows through
+    pending/approved/denied/expired/cancelled; ``purge_expired`` enforces
+    the TTL.
     """
 
-    def put(self, session_id: str, state: dict, pending_action: str | None) -> None:
+    def create(
+        self,
+        approval_id: str,
+        *,
+        session_id: str,
+        state: dict,
+        expires_at,
+        tool_name: str | None = None,
+        arguments: dict | None = None,
+        tool_calls: list | None = None,
+        risk_level: str = "low",
+        pending_action: str | None = None,
+    ) -> ApprovalRow:
+        from datetime import datetime, timezone
+
+        if isinstance(expires_at, str):
+            dt = datetime.fromisoformat(expires_at)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            expires_at = dt
         with get_session() as s:
-            s.merge(
-                PendingApprovalRow(
-                    session_id=session_id,
-                    state=state,
-                    pending_action=pending_action,
-                )
+            row = ApprovalRow(
+                id=approval_id,
+                session_id=session_id,
+                tool_name=tool_name,
+                arguments=arguments,
+                tool_calls=tool_calls or [],
+                risk_level=risk_level,
+                pending_action=pending_action,
+                state=state,
+                expires_at=expires_at,
+                status="pending",
             )
-
-    def get(self, session_id: str) -> PendingApprovalRow | None:
-        with get_session() as s:
-            return s.get(PendingApprovalRow, session_id)
-
-    def pop(self, session_id: str) -> PendingApprovalRow | None:
-        with get_session() as s:
-            row = s.get(PendingApprovalRow, session_id)
-            if row is not None:
-                s.delete(row)
-                s.flush()
+            s.add(row)
+            s.flush()
             return row
 
-    def clear(self, session_id: str) -> None:
+    def get(self, approval_id: str) -> ApprovalRow | None:
         with get_session() as s:
-            row = s.get(PendingApprovalRow, session_id)
+            return s.get(ApprovalRow, approval_id)
+
+    def get_pending(self, session_id: str) -> ApprovalRow | None:
+        with get_session() as s:
+            return s.scalars(
+                select(ApprovalRow)
+                .where(
+                    ApprovalRow.session_id == session_id,
+                    ApprovalRow.status == "pending",
+                )
+                .order_by(desc(ApprovalRow.created_at))
+                .limit(1)
+            ).first()
+
+    def get_expired(self, session_id: str) -> ApprovalRow | None:
+        """Return the latest non-resolvable row for *session_id*.
+
+        Used so a resume can report ``expired`` (410) instead of a generic
+        "no pending approval" after a TTL sweep already flipped the row.
+        """
+        with get_session() as s:
+            return s.scalars(
+                select(ApprovalRow)
+                .where(
+                    ApprovalRow.session_id == session_id,
+                    ApprovalRow.status == "expired",
+                )
+                .order_by(desc(ApprovalRow.created_at))
+                .limit(1)
+            ).first()
+
+    def pop_pending(self, session_id: str) -> ApprovalRow | None:
+        """Atomically return and delete the pending row for *session_id*."""
+        row = self.get_pending(session_id)
+        if row is None:
+            return None
+        self.delete(row.id)
+        return row
+
+    def delete(self, approval_id: str) -> None:
+        with get_session() as s:
+            row = s.get(ApprovalRow, approval_id)
             if row is not None:
                 s.delete(row)
                 s.flush()
+
+    def set_status(self, approval_id: str, status: str) -> None:
+        with get_session() as s:
+            row = s.get(ApprovalRow, approval_id)
+            if row is not None:
+                row.status = status
+                s.flush()
+
+    def cancel_all_for_session(self, session_id: str) -> None:
+        """Mark any pending approval for *session_id* as cancelled."""
+
+        with get_session() as s:
+            rows = s.scalars(
+                select(ApprovalRow).where(
+                    ApprovalRow.session_id == session_id,
+                    ApprovalRow.status == "pending",
+                )
+            ).all()
+            for row in rows:
+                row.status = "cancelled"
+            s.flush()
+
+    def purge_expired(self, now=None) -> int:
+        """Mark every pending row past its expiry as ``expired``.
+
+        Returns the number of rows updated. Intended to be called
+        periodically (startup + a background TTL sweep).
+        """
+        from datetime import datetime, timezone
+
+        if now is None:
+            now = datetime.now(timezone.utc)
+        with get_session() as s:
+            rows = s.scalars(
+                select(ApprovalRow).where(
+                    ApprovalRow.status == "pending",
+                    ApprovalRow.expires_at < now,
+                )
+            ).all()
+            for row in rows:
+                row.status = "expired"
+            return len(rows)
 
 
 class TaskRepo:
@@ -190,11 +338,27 @@ class TaskRepo:
     ) -> TaskRow:
         with get_session() as s:
             row = TaskRow(
-                id=task_id, session_id=session_id, description=description, status="pending"
+                id=task_id, session_id=session_id, description=description, status="queued"
             )
             s.add(row)
             s.flush()
             return row
+
+    def list_for_session(
+        self, session_id: str, limit: int = 20
+    ) -> list[TaskRow]:
+        with get_session() as s:
+            return list(
+                s.scalars(
+                    select(TaskRow)
+                    .where(TaskRow.session_id == session_id)
+                    .order_by(desc(TaskRow.created_at))
+                    .limit(limit)
+                ).all()
+            )
+
+    def mark_queued(self, task_id: str) -> None:
+        self._set_status(task_id, "queued")
 
     def mark_running(self, task_id: str) -> None:
         from datetime import datetime, timezone
@@ -203,7 +367,24 @@ class TaskRepo:
             row = s.get(TaskRow, task_id)
             if row is not None:
                 row.status = "running"
-                row.started_at = datetime.now(timezone.utc)
+                row.started_at = row.started_at or datetime.now(timezone.utc)
+                s.flush()
+
+    def mark_waiting_for_approval(
+        self,
+        task_id: str,
+        *,
+        approval_id: str | None,
+        pending_action: str | None,
+        pending_tool_calls: list | None,
+    ) -> None:
+        with get_session() as s:
+            row = s.get(TaskRow, task_id)
+            if row is not None:
+                row.status = "waiting_for_approval"
+                row.approval_id = approval_id
+                row.pending_action = pending_action
+                row.pending_tool_calls = pending_tool_calls or []
                 s.flush()
 
     def mark_done(self, task_id: str, result: str | None) -> None:
@@ -214,6 +395,7 @@ class TaskRepo:
             if row is not None:
                 row.status = "completed"
                 row.result = result
+                row.stage = None
                 row.finished_at = datetime.now(timezone.utc)
                 s.flush()
 
@@ -225,7 +407,56 @@ class TaskRepo:
             if row is not None:
                 row.status = "failed"
                 row.error = error
+                row.stage = None
                 row.finished_at = datetime.now(timezone.utc)
+                s.flush()
+
+    def mark_cancelled(self, task_id: str, error: str | None = None) -> None:
+        from datetime import datetime, timezone
+
+        with get_session() as s:
+            row = s.get(TaskRow, task_id)
+            if row is not None:
+                row.status = "cancelled"
+                row.error = error
+                row.stage = None
+                row.finished_at = datetime.now(timezone.utc)
+                s.flush()
+
+    def update_stage(self, task_id: str, stage: str | None) -> None:
+        with get_session() as s:
+            row = s.get(TaskRow, task_id)
+            if row is not None:
+                row.stage = stage
+                s.flush()
+
+    def recover_stale(self, *statuses: str) -> int:
+        """Fail tasks left in a non-terminal state by a previous process.
+
+        Returns the number of rows updated. Called once at startup so a
+        backend restart never leaves a task perpetually ``running`` or
+        ``waiting_for_approval``.
+        """
+        from datetime import datetime, timezone
+
+        terminal = ("completed", "failed", "cancelled")
+        targets = [st for st in (statuses or ("queued", "running", "waiting_for_approval")) if st not in terminal]
+        with get_session() as s:
+            rows = s.scalars(
+                select(TaskRow).where(TaskRow.status.in_(targets))
+            ).all()
+            for row in rows:
+                row.status = "failed"
+                row.error = "Interrupted by a backend restart."
+                row.stage = None
+                row.finished_at = datetime.now(timezone.utc)
+            return len(rows)
+
+    def _set_status(self, task_id: str, status: str) -> None:
+        with get_session() as s:
+            row = s.get(TaskRow, task_id)
+            if row is not None:
+                row.status = status
                 s.flush()
 
 

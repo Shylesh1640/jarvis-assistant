@@ -64,6 +64,21 @@ def _patch_chat_ollama(monkeypatch):
     _FakeChatOllama.instances.clear()
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    """Restore the module-global rate limiter between tests.
+
+    Tests that monkeypatch ``settings.rate_limit_per_minute`` and call
+    ``reload_limiter()`` would otherwise leave a tiny or zero limit in place
+    and throttle unrelated tests in the same process.
+    """
+    from jarvis.security import ratelimit as ratelimit_module
+
+    ratelimit_module.reload_limiter()
+    yield
+    ratelimit_module.reload_limiter()
+
+
 @pytest.fixture
 def fake_ollama():
     """Expose the captured ChatOllama instances for direct assertions."""

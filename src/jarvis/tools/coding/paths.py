@@ -25,13 +25,22 @@ class WorkspaceError(ValueError):
 
 # Filename patterns that are treated as sensitive and refused by read/write
 # tools regardless of location: ``.env`` / ``.env.*``, private-key material,
-# and credentials/secrets stores.
+# cloud/CI credential stores, and password/token files.
 _SENSITIVE_NAMES = re.compile(
     r"(^|[/\\])(\.env(\.|$)|id_rsa(\.|$)|id_dsa(\.|$)|id_ecdsa(\.|$)"
-    r"|id_ed25519(\.|$)|credentials(\.|$)|secrets?(\.|$))",
+    r"|id_ed25519(\.|$)|credentials(\.|$)|secrets?(\.|$)"
+    r"|\.git-credentials(\.|$)|\.netrc(\.|$)|\.pypirc(\.|$)"
+    r"|\.npmrc(\.|$)|\.htpasswd(\.|$)"
+    r"|\.aws[/\\]|\.azure[/\\]|\.kube[/\\]|gcloud[/\\]"
+    r"|\.sunglass[/\\]|\.baseline[/\\]|\.bash_history(\.|$)|\.zsh_history(\.|$))",
     re.IGNORECASE,
 )
-_SENSITIVE_SUFFIXES = (".pem", ".key", ".ppk", ".p12", ".pfx", ".keystore")
+_SENSITIVE_SUFFIXES = (".pem", ".key", ".ppk", ".p12", ".pfx", ".keystore", ".ovpn")
+_SENSITIVE_NAMES_WITH_SUFFIX = re.compile(
+    r"(^|[/\\])(.*\.)?(token|password|passwd|secret|api_?key|private_?key)"
+    r"(\.txt|\.json|\.yaml|\.yml|\.ini|\.cfg|\.env)?$",
+    re.IGNORECASE,
+)
 
 
 def is_sensitive_filename(name: str) -> bool:
@@ -40,7 +49,9 @@ def is_sensitive_filename(name: str) -> bool:
         return False
     if _SENSITIVE_NAMES.search(name):
         return True
-    return name.lower().endswith(_SENSITIVE_SUFFIXES)
+    if name.lower().endswith(_SENSITIVE_SUFFIXES):
+        return True
+    return bool(_SENSITIVE_NAMES_WITH_SUFFIX.search(name))
 
 
 def workspace_root() -> Path:

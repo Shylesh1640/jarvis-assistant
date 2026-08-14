@@ -18,32 +18,42 @@ def build_context(state: JarvisState) -> JarvisState:
     has no documents yet, retrieved_context is left empty and the rest of
     the graph still runs.
 
+    Retrieval is best-effort: if the RAG store fails (corrupt index,
+    embedding server down) the graph **degrades gracefully** — it answers
+    without retrieved context and records a ``warning`` instead of failing
+    the whole request.
+
     ``sources`` is populated with ``{"source", "chunk_id", "doc"}`` per
     hit so the UI can render citations. The formatted context block
     (``retrieved_context``) remains the model-facing string.
     """
-    if not has_documents():
+    state.setdefault("retrieved_context", "")
+    state.setdefault("sources", [])
+
+    try:
+        if not has_documents():
+            logger.debug("No documents in vector store — skipping context retrieval")
+            return state
+
+        query = build_retrieval_query(state)
+        if not query:
+            return state
+
+        context, sources = query_context(
+            query,
+            k=settings.retrieval_top_k,
+            score_threshold=settings.rag_relevance_threshold or None,
+            with_sources=True,
+        )
+        state["retrieved_context"] = context
+        state["sources"] = sources
+        logger.info(
+            "Retrieved context (%d chars, %d sources) for query (%d chars)",
+            len(context), len(sources), len(query),
+        )
+    except Exception as exc:  # noqa: BLE001 — graceful degradation
+        logger.warning("RAG retrieval failed — answering without context: %s", exc)
         state["retrieved_context"] = ""
         state["sources"] = []
-        logger.debug("No documents in vector store — skipping context retrieval")
-        return state
-
-    query = build_retrieval_query(state)
-    if not query:
-        state["retrieved_context"] = ""
-        state["sources"] = []
-        return state
-
-    context, sources = query_context(
-        query,
-        k=settings.retrieval_top_k,
-        score_threshold=settings.rag_relevance_threshold or None,
-        with_sources=True,
-    )
-    state["retrieved_context"] = context
-    state["sources"] = sources
-    logger.info(
-        "Retrieved context (%d chars, %d sources) for query (%d chars)",
-        len(context), len(sources), len(query),
-    )
+        state["warning"] = "Retrieval store unavailable — answering without retrieved context."
     return state

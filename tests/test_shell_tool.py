@@ -65,6 +65,39 @@ def test_blocked_patterns_table():
         assert ok is False, cmd
 
 
+def test_metacharacters_blocked_even_for_allowed_head(monkeypatch):
+    _allow("ls,pytest,npm,echo", monkeypatch)
+    for cmd in [
+        "ls; echo hi",
+        "ls && whoami",
+        "ls || echo hi",
+        "ls | grep foo",
+        "pytest &",
+        "echo $(whoami)",
+        "echo `${whoami}`",
+        "echo ${HOME}",
+        "cat < /etc/passwd",
+        "echo ok\necho pwned",
+        "git status ; git push",
+    ]:
+        ok, reason = is_safe_command(cmd)
+        assert ok is False, cmd
+        assert "metacharacters" in reason
+
+
+def test_redirect_to_storage_is_an_allowlisted_use(monkeypatch):
+    _allow("echo", monkeypatch)
+    ok, reason = is_safe_command("echo done > out.txt")
+    assert ok is True, reason
+
+
+def test_run_shell_refuses_metachar_chain(workspace, monkeypatch):
+    _allow("echo", monkeypatch)
+    out = run_shell.invoke({"command": "echo hi; echo pwned"})
+    assert out.startswith("Error")
+    assert "metacharacters" in out
+
+
 # ---------------------------------------------------------------------------
 # run_shell integration
 # ---------------------------------------------------------------------------

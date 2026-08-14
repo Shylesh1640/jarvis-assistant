@@ -40,6 +40,12 @@ _BLOCKED_PATTERNS = [
 ]
 _BLOCKED_RE = re.compile("|".join(_BLOCKED_PATTERNS), re.IGNORECASE)
 
+# Shell metacharacters / compound-command markers. Blocking these prevents
+# chaining a second command onto the allowlisted head ("npm run build; rm -rf
+# .") and blocks command substitution / nested execution. With the exception
+# of `>` (redirect) they are never needed by the allowlisted commands.
+_METACHAR_RE = re.compile(r"[;&|`<]|\$\(|\$\{|\n")
+
 
 def _allowed_commands() -> set[str]:
     raw = settings.shell_allowed_commands or ""
@@ -66,6 +72,8 @@ def is_safe_command(command: str) -> tuple[bool, str | None]:
         return False, "empty command"
     if _has_blocked_pattern(command):
         return False, "blocked destructive pattern"
+    if _has_shell_metacharacters(command):
+        return False, "shell metacharacters are not allowed"
     head = _head_command(command)
     if head is None:
         return False, "could not parse command"
@@ -73,6 +81,17 @@ def is_safe_command(command: str) -> tuple[bool, str | None]:
     if head not in allowed_multi:
         return False, f"command '{head}' is not in the allowlist"
     return True, None
+
+
+def _has_shell_metacharacters(command: str) -> bool:
+    """True when *command* contains separators / substitution / redirection.
+
+    Rejects compound commands (``;``, ``&&``, ``||``, ``|``), backgrounding
+    (``&``), command substitution (``$(``, backticks, ``${``), input
+    redirection (``<``) and embedded newlines, so a command can never chain
+    a second (unallowlisted) invocation onto the allowlisted head.
+    """
+    return bool(_METACHAR_RE.search(command))
 
 
 @tool

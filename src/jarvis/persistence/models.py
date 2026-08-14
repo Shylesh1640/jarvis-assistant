@@ -24,7 +24,17 @@ class SessionRow(Base):
     __tablename__ = "sessions"
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    # Optional user identifier reserved for future auth.
+    user_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Per-session bearer token used to prevent cross-session access when
+    # ``settings.require_session_token`` is enabled.
+    token: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    # Last activity so the UI can show which sessions are live and a future
+    # cleanup job can expire dormant sessions.
+    last_active_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
@@ -83,23 +93,46 @@ class TaskRow(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     session_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     description: Mapped[str] = mapped_column(Text)
-    # pending | running | completed | failed
-    status: Mapped[str] = mapped_column(String(16), default="pending")
+    # queued | running | waiting_for_approval | completed | failed | cancelled
+    status: Mapped[str] = mapped_column(String(24), default="queued")
+    # Human-readable progress marker surfaced to the polling UI, e.g.
+    # "running tests…", "writing file…".
+    stage: Mapped[str | None] = mapped_column(Text, nullable=True)
     result: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Approval snapshot surfaced when status == "waiting_for_approval".
+    approval_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pending_action: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pending_tool_calls: Mapped[list[Any]] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
-class PendingApprovalRow(Base):
-    """Paused graph state awaiting an approval resume."""
+class ApprovalRow(Base):
+    """Durable pending-approval record.
 
-    __tablename__ = "pending_approvals"
+    Unlike the old in-memory cache, this row survives a backend restart so a
+    paused approval can be resumed (or expired by TTL) even after the process
+    died. ``state`` carries the JSON-serialised graph state needed to resume
+    the exact stored tool call(s) — never a different action.
+    """
 
-    session_id: Mapped[str] = mapped_column(String(128), primary_key=True)
-    # The full LangGraph state, serialised to JSON. Carries tool_calls,
-    # messages-as-dicts, intent, etc.
-    state: Mapped[dict[str, Any]] = mapped_column(JSON)
+    __tablename__ = "approvals"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # approval_id
+    session_id: Mapped[str] = mapped_column(String(128), index=True)
+    # Display fields from the highest-risk pending tool call.
+    tool_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    arguments: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # Full structured list of tool calls awaiting approval: [{name, args}].
+    tool_calls: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    risk_level: Mapped[str] = mapped_column(String(16), default="low")
     pending_action: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The full LangGraph state, serialised to JSON. Carries tool_calls,
+    # messages-as-dicts, intent, etc. so resume works after a restart.
+    state: Mapped[dict[str, Any]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # pending | approved | denied | expired | cancelled
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)

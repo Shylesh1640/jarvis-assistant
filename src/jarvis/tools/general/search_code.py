@@ -7,7 +7,11 @@ from pathlib import Path
 
 from langchain_core.tools import tool
 
-from jarvis.tools.coding.paths import WorkspaceError, resolve_in_workspace
+from jarvis.tools.coding.paths import (
+    WorkspaceError,
+    is_sensitive_filename,
+    resolve_in_workspace,
+)
 
 logger = logging.getLogger("jarvis.tools.search_code")
 
@@ -60,6 +64,10 @@ def search_code(pattern: str, path: str = ".") -> str:
     for f in files:
         try:
             if f.stat().st_size > _MAX_FILE_BYTES:
+                continue
+            # Never surface secrets (.env, keys, credential stores) in a
+            # search hit — they are skipped even when the extension matches.
+            if is_sensitive_filename(str(f)):
                 continue
             text = f.read_text(encoding="utf-8", errors="ignore")
         except OSError:

@@ -35,6 +35,12 @@ DOCS_COUNT_URL = f"{BASE_URL}/documents/count"
 DOCS_UPLOAD_URL = f"{BASE_URL}/documents/upload"
 TASKS_URL = f"{BASE_URL}/tasks"
 RUNTIME_URL = f"{BASE_URL}/runtime"
+TRACES_URL = f"{BASE_URL}/traces/recent"
+
+# Session id this UI presents to the backend. Every request carries the
+# bearer token issued for it so REQUIRE_SESSION_TOKEN stays a config-only
+# switch for the operator.
+SESSION_ID = os.environ.get("JARVIS_SESSION_ID", "default")
 
 SUGGESTIONS = {
     "Explain an idea": "Explain how retrieval-augmented generation works, simply.",
@@ -84,6 +90,36 @@ def fetch_doc_count() -> int | None:
         r.raise_for_status()
         return int(r.json().get("count", 0))
     except Exception:
+        return None
+
+
+def session_token(session_id: str) -> str | None:
+    """Return the bearer token for *session_id*, fetched once per run.
+
+    The backend issues it via ``GET /sessions/{id}/token``. If the backend
+    is unreachable we keep going token-less; enforcement is an operator
+    opt-in and the chat request would 403 with a clear message if required.
+    """
+    cached = st.session_state.get(f"token_{session_id}")
+    if cached:
+        return cached
+    try:
+        r = httpx.get(f"{BASE_URL}/sessions/{session_id}/token", timeout=5)
+        r.raise_for_status()
+        token = r.json().get("session_token")
+        st.session_state[f"token_{session_id}"] = token
+        return token
+    except Exception:  # noqa: BLE001
+        logger.debug("Could not fetch session token for %s", session_id)
+        return None
+
+
+def fetch_trace_panel() -> list[dict] | None:
+    try:
+        r = httpx.get(TRACES_URL, timeout=5)
+        r.raise_for_status()
+        return r.json()
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -139,13 +175,36 @@ def create_task(description: str, session_id: str) -> dict | None:
     try:
         r = httpx.post(
             TASKS_URL,
-            json={"description": description, "session_id": session_id},
+            json={
+                "description": description,
+                "session_id": session_id,
+                "session_token": session_token(session_id),
+            },
             timeout=10,
         )
         r.raise_for_status()
         return r.json()
+    except httpx.HTTPStatusError as exc:
+        try:
+            body = exc.response.json()
+            msg = body.get("message", "") or body.get("error", str(exc))
+        except Exception:  # noqa: BLE001
+            msg = str(exc)
+        st.error(f"Could not start task: {msg}", icon=":material/error:")
+        return None
     except Exception as exc:  # noqa: BLE001
         st.error(f"Could not start task: {exc}", icon=":material/error:")
+        return None
+
+
+def task_action(task_id: str, action: str) -> dict | None:
+    """POST ``approve`` / ``deny`` / ``cancel`` for a background task."""
+    try:
+        r = httpx.post(f"{TASKS_URL}/{task_id}/{action}", timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Task {action} failed: {exc}", icon=":material/error:")
         return None
 
 
@@ -156,7 +215,7 @@ def poll_task(task_id: str, timeout: float = 295.0, interval: float = 2.0) -> di
             r = httpx.get(f"{TASKS_URL}/{task_id}", timeout=10)
             r.raise_for_status()
             data = r.json()
-            if data["status"] in ("completed", "failed"):
+            if data["status"] in ("completed", "failed", "cancelled"):
                 return data
         except Exception:
             pass
@@ -189,6 +248,9 @@ if "toggles" not in st.session_state:
         "background_task": False,
         "debug": False,
     }
+# id of a background task currently being tracked live.
+if "active_task_id" not in st.session_state:
+    st.session_state.active_task_id = None
 
 
 def _clear_selection() -> None:
@@ -295,7 +357,8 @@ def _send_message(
         with st.spinner("Thinking..."):
             try:
                 payload = {
-                    "session_id": "default",
+                    "session_id": SESSION_ID,
+                    "session_token": session_token(SESSION_ID),
                     "message": text,
                     "history": history,
                     "selected_text": selected_text or None,
@@ -323,6 +386,16 @@ def _send_message(
                     logger.info("Approval required: %s", data.get("pending_action"))
                 else:
                     _clear_pending_approval()
+            except httpx.HTTPStatusError as exc:
+                try:
+                    body = exc.response.json()
+                    err = body.get("error", "request_failed")
+                    msg = body.get("message", str(exc))
+                    action = f"\n\n> Suggested: {body.get('suggested_action')}" if body.get("suggested_action") else ""
+                    answer = f"**{err}** — {msg}{action}"
+                except Exception:  # noqa: BLE001
+                    answer = f"Backend error ({exc.response.status_code}): {exc}"
+                st.error(answer, icon=":material/error:")
             except httpx.TimeoutException:
                 answer = "This request is taking too long in interactive mode. Toggle 'Run as background task' for heavy prompts."
                 st.error(answer, icon=":material/schedule:")
@@ -335,45 +408,131 @@ def _send_message(
 
 
 def _run_background_task(description: str) -> None:
-    """Post a /tasks job, poll it, and append the result as an assistant turn."""
+    """Post a /tasks job and open a live, auto-refreshing status card."""
     with st.chat_message("user", avatar=":material/person:"):
         st.markdown(description)
     st.session_state.messages.append({"role": "user", "content": description})
 
-    with st.chat_message("assistant", avatar=":material/smart_toy:"):
-        st.badge("background", color="orange")
-        started = create_task(description, "default")
-        if started is None:
-            st.session_state.messages.append(
-                {"role": "assistant", "content": "Failed to start background task."}
+    started = create_task(description, SESSION_ID)
+    if started is None:
+        st.session_state.messages.append(
+            {"role": "assistant", "content": "Failed to start background task."}
+        )
+        return
+    st.session_state.active_task_id = started["id"]
+
+
+@st.fragment(run_every=2)
+def _render_task_card(task_id: str) -> None:
+    """Live background-task card: progress, approval actions, terminal result.
+
+    Polls ``GET /tasks/{id}`` every 2s and re-renders only this fragment, so
+    the rest of the chat UI stays responsive. When the task hits a terminal
+    state the result is folded into the conversation and the card clears.
+    """
+    try:
+        r = httpx.get(f"{TASKS_URL}/{task_id}", timeout=10)
+        r.raise_for_status()
+        status = r.json()
+    except Exception as exc:  # noqa: BLE001
+        with st.container(border=True):
+            st.caption(f":material/schedule: Task `{task_id}`")
+            st.warning(f"Status unavailable: {exc}", icon=":material/error:")
+        return
+
+    state = status["status"]
+    with st.container(border=True):
+        st.markdown(f"**:material/schedule: Background task `{task_id[:10]}…`**")
+        st.caption(status.get("description") or "")
+
+        if state == "waiting_for_approval":
+            st.badge("awaiting approval", color="orange")
+            st.markdown(
+                f"Jarvis wants to: `{status.get('pending_action') or 'perform an action'}`"
             )
+            tool_calls = list(status.get("pending_tool_calls") or [])
+            if tool_calls:
+                for tc in tool_calls:
+                    args = tc.get("args", {}) or {}
+                    arg_str = ", ".join(f"{k}={v!r}" for k, v in args.items())
+                    st.code(f"{tc.get('name', '?')}({arg_str})", language="text")
+            with st.container(horizontal=True):
+                if st.button("Approve", type="primary", icon=":material/check:"):
+                    task_action(task_id, "approve")
+                    st.rerun(scope="fragment")
+                if st.button("Deny", icon=":material/block:"):
+                    task_action(task_id, "deny")
+                    st.rerun(scope="fragment")
+                if st.button("Cancel", icon=":material/close:"):
+                    task_action(task_id, "cancel")
+                    st.rerun(scope="fragment")
             return
-        task_id = started["id"]
-        st.caption(f"Task submitted: `{task_id}` — polling…")
-        with st.spinner("Running in background…"):
-            result = poll_task(task_id)
-        if result is None:
-            answer = "Background task is still running. Poll it later via GET /tasks/{id}."
-            st.warning(answer, icon=":material/schedule:")
-            record = {"role": "assistant", "content": answer, "path": "background"}
-        elif result["status"] == "failed":
-            answer = f"Task failed: {result.get('error')}"
-            st.error(answer, icon=":material/error:")
-            record = {"role": "assistant", "content": answer, "path": "background"}
-        else:
-            answer = result.get("result") or "(no output)"
-            st.markdown(answer)
-            record = {
-                "role": "assistant",
-                "content": answer,
-                "path": "background",
-                "model": None,
-                "tools_used": [],
-                "sources": [],
-                "retrieved_context": None,
-                "approval_required": False,
-            }
+
+        if state in ("queued", "running"):
+            stage = status.get("stage") or ("queued" if state == "queued" else "running…")
+            st.caption(f":material/running: {stage}")
+            st.progress(0.35 if state == "running" else 0.05, text=stage)
+            if st.button("Cancel task", icon=":material/stop:"):
+                task_action(task_id, "cancel")
+                st.rerun(scope="fragment")
+            return
+
+        if state == "cancelled":
+            st.badge("cancelled", color="gray")
+            st.caption(status.get("error") or "Cancelled.")
+            if st.button("Dismiss", icon=":material/close:"):
+                _finish_task_card(task_id, "cancelled", status)
+                st.rerun(scope="fragment")
+            return
+
+        if state == "failed":
+            st.badge("failed", color="red")
+            st.error(status.get("error") or "Task failed.", icon=":material/error:")
+            if st.button("Dismiss", icon=":material/close:"):
+                _finish_task_card(task_id, "failed", status)
+                st.rerun(scope="fragment")
+            return
+
+        # completed
+        st.badge("completed", color="green")
+        answer = status.get("result") or "(no output)"
+        st.markdown(answer)
+        if st.button("Dismiss", icon=":material/close:"):
+            _finish_task_card(task_id, "completed", status)
+            st.rerun(scope="fragment")
+
+
+def _finish_task_card(task_id: str, state: str, status: dict) -> None:
+    """Fold a terminal task's outcome into the conversation and clear the card."""
+    if state == "completed":
+        answer = status.get("result") or "(no output)"
+        record = {
+            "role": "assistant",
+            "content": answer,
+            "path": "background",
+            "model": None,
+            "tools_used": [],
+            "sources": [],
+            "retrieved_context": None,
+            "approval_required": False,
+        }
+    else:
+        answer = (
+            f"Background task **{state}**"
+            + (f": {status.get('error')}" if status.get("error") else "")
+        )
+        record = {
+            "role": "assistant",
+            "content": answer,
+            "path": "background",
+            "model": None,
+            "tools_used": [],
+            "sources": [],
+            "retrieved_context": None,
+            "approval_required": False,
+        }
     st.session_state.messages.append(record)
+    st.session_state.active_task_id = None
 
 
 def _seconds_until(expires_at: str | None) -> int | None:
@@ -560,13 +719,47 @@ with st.sidebar:
                     f"-> {res.get('chunks', 0)} chunk(s)."
                 )
 
+    st.subheader("Recent traces", divider=False)
+    with st.expander("Trace debug panel", icon=":material/query_stats:"):
+        trace_clicked = st.button(
+            "Refresh traces", icon=":material/refresh:"
+        )
+        if trace_clicked:
+            st.cache_data.clear()
+        traces = fetch_trace_panel()
+        if not traces:
+            if trace_clicked:
+                st.caption("No traces recorded yet — send a message and refresh.")
+            else:
+                st.caption("No traces recorded yet.")
+        else:
+            st.caption(f"{len(traces)} recent request(s).")
+            for t in reversed(traces):
+                path = t.get("path_used") or "unknown"
+                model = t.get("selected_model") or "-"
+                duration = t.get("duration_ms", 0)
+                err = t.get("error")
+                approval = t.get("approval_status") or "not_required"
+                color = "red" if err else ("orange" if approval == "required" else "green")
+                label = f"{t.get('intent') or '—'}/{path}"
+                st.badge(label, color=color)
+                st.caption(
+                    f"`{t.get('request_id', '')[:8]}…` {model} · {duration:.0f}ms · "
+                    f"approval={approval}"
+                )
+                if err:
+                    st.caption(f":material/error: {err}")
+                st.divider()
+
     with st.expander("Tips", icon=":material/lightbulb:"):
         st.markdown(
             "- Ask coding questions to route to the strong local coder.\n"
             "- Long or architecture-style prompts route to the cloud chain.\n"
             "- Select part of a reply, paste it below the reply, then ask about it.\n"
-            "- Risky tool calls pause and ask for approval.\n"
-            "- Toggle 'Run as background task' for very long prompts."
+            "- Risky tool calls pause and ask for approval — in background tasks too.\n"
+            "- Toggle 'Run as background task' for very long prompts; the task card\n"
+            "  updates live and can be approved, denied, or cancelled from it.\n"
+            "- The trace debug panel in the sidebar shows the last request pipeline."
         )
 
     if st.button("Clear conversation", icon=":material/delete:"):
@@ -574,6 +767,7 @@ with st.sidebar:
         _clear_pending_approval()
         st.session_state.pending_selection = ""
         st.session_state.selection_target_index = None
+        st.session_state.active_task_id = None
         st.rerun()
 
     if st.session_state.messages:
@@ -712,6 +906,9 @@ if latest_assistant_idx is not None and not st.session_state.pending_action:
 
 if st.session_state.pending_action:
     _render_approval_card()
+
+if st.session_state.active_task_id:
+    _render_task_card(st.session_state.active_task_id)
 
 # ---------------------------------------------------------------------------
 # Main chat input

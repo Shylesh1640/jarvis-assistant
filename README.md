@@ -22,7 +22,11 @@ uv run uvicorn jarvis.api.main:app --reload --app-dir src
 
 API endpoints: `GET /health`, `GET /models`, `GET /documents/count`,
 `POST /documents/upload`, `POST /documents/ingest-folder`, `POST /chat`,
-`POST /tasks`, `GET /tasks/{task_id}`, `GET /runtime`.
+`POST /tasks`, `GET /tasks/{task_id}`, `GET /runtime`,
+`GET /sessions/{session_id}/token` (per-session bearer token), and
+`GET /traces/recent` (recent trace registry entries). Approval responses
+(«Approve / Deny») are submitted by re-posting the pending message to
+`POST /chat` with the `approved` field set.
 
 ## Run frontend
 
@@ -31,8 +35,8 @@ uv run streamlit run streamlit_app.py
 ```
 
 The sidebar shows live backend health, the currently configured local and
-cloud models, the current size of the RAG store, a GPU runtime panel, and an
-"Export conversation (.md)" download button. First-message suggestion pills
+cloud models, the current size of the RAG store, a GPU runtime panel, a live
+traces panel, and an "Export conversation (.md)" download button. First-message suggestion pills
 help you get started. Each assistant reply is annotated with badges for the
 branch path and the model that produced it, plus the list of tools used,
 expandable citation / debug sections, and a "Copy answer" popover. After an
@@ -59,6 +63,74 @@ curl localhost:8000/tasks/<task_id>
 
 Each task persists through `pending → running → completed/failed` in the
 DB. Tasks run with approvals auto-approved (there is no interactive user).
+
+## Security, errors and observability
+
+### Durable approvals & sessions
+
+Approvals are **durable**: a pending tool call is written to the DB together
+with its TTL, so an interrupted run (browser refresh, backend restart) never
+loses the pending action. The UI shows an inline Approve / Deny card with a
+live countdown; your choice is sent back to `POST /chat` with the `approved`
+field set, and only the *exact* captured tool call executes. If the TTL has
+expired the server answers **410 Gone** so a stale approval can never fire.
+
+Sessions are persisted too — a fresh message after a restart carries the old
+session forward instead of starting from scratch.
+
+### Per-session bearer tokens
+
+With `REQUIRE_SESSION_TOKEN=true`, `POST /chat` and `POST /tasks` require a
+token obtained from `GET /sessions/{session_id}/token`. Tokens are per-session
+(they cannot be replayed against another session), persisted in the DB, and
+rotated on each fetch. When disabled (default) the token is optional and only
+used to label the session.
+
+### Rate limiting
+
+`RATE_LIMIT_PER_MINUTE` (default 300, `0` disables) throttles requests per
+session / client IP. When exceeded the API returns **429 Too Many Requests**
+with a `Retry-After` hint. The Streamlit UI never trips it under normal use.
+
+### Structured errors
+
+Every error response follows one shape:
+
+```json
+{
+  "error": "model_unavailable",
+  "message": "Model 'qwen3:8b' was not found on the local Ollama server.",
+  "suggested_action": "Run `ollama pull qwen3:8b` and retry."
+}
+```
+
+Common codes: `model_not_found` (400/404), `model_unavailable` (503),
+`ollama_timeout` (504), `out_of_memory` (507, with optional CPU-retry hint),
+`validation_error`, `approval_expired` (410), `rate_limited` (429),
+`unauthorized` (401), `internal_error` (500). The exact code is stable for
+programmatic handling; `suggested_action` is a human-readable fix.
+
+### Retry & GPU fallback
+
+Transient Ollama failures (server restart, request timeout) are retried up to
+`RETRY_MAX_ATTEMPTS` (default 3) with linear backoff. OOM under full GPU
+offload is retried once on CPU (`GPU_FALLBACK_TO_CPU=true`); the response
+then carries a warning so you know the run was CPU-only.
+
+### Observability
+
+Each request receives a **trace id** echoed as `trace_id` in the response and
+propagated to LangGraph runs, background tasks and errors. The server keeps a
+bounded in-memory trace registry of the most recent runs (`GET /traces/recent`)
+with per-node timing and durations. The Streamlit sidebar shows a "Traces"
+panel that refreshes these live; `JSON_LOGS_ENABLED=true` switches the log
+format to JSON for parsing.
+
+### Secret-token redaction
+
+Output guardrails redact high-entropy secret-like tokens (API keys, JWT
+patterns, bearer tokens) from assistant replies before they reach the UI —
+the raw secret never leaks into the chat or exported transcripts.
 
 ## Document upload
 
@@ -269,14 +341,22 @@ All settings live in `src/jarvis/config/settings.py` and are loaded from
 | `SUMMARY_EVERY_TURNS` | `10` | Periodic summarization cadence (pairs of turns) |
 | `DEFAULT_ANSWER_STYLE` | _empty_ | Default answer-style suffix |
 | `DEFAULT_SHOW_REASONING` | `false` | Show reasoning by default |
+| `RETRY_MAX_ATTEMPTS` | `3` | Retries for transient Ollama failures (1 = off) |
+| `RETRY_BACKOFF_SECONDS` | `1.0` | Base backoff between retries (linear growth) |
+| `GPU_FALLBACK_TO_CPU` | `true` | Retry OOM once on CPU instead of failing |
+| `RATE_LIMIT_PER_MINUTE` | `300` | Requests/minute per session/IP; `0` disables |
+| `REQUIRE_SESSION_TOKEN` | `false` | Require per-session bearer token on `/chat` + `/tasks` |
+| `JSON_LOGS_ENABLED` | `false` | Emit JSON-formatted logs for parsing |
 
 ## Project structure
 
 ```text
 src/jarvis/
-├── api/                # FastAPI app, routes/, schemas/
-│   ├── main.py        # app + /health + /models + /runtime
-│   └── routes/        # chat.py, documents.py, tasks.py, runtime.py
+├── api/                # FastAPI app, routes/, schemas/, errors.py
+│   ├── main.py        # app + lifespan + /health + /models + /runtime
+│   └── routes/        # chat.py, documents.py, tasks.py, runtime.py, sessions.py, traces.py
+├── security/          # session_auth.py (tokens), ratelimit.py
+├── observability/     # trace.py (trace ids + bounded registry)
 ├── orchestration/     # LangGraph state, router, branches, graph, approval gate
 │   ├── graph.py       # compiled graph (InMemorySaver checkpointer) wiring nodes
 │   ├── state.py       # JarvisState TypedDict
@@ -289,7 +369,7 @@ src/jarvis/
 ├── tools/             # general + coding (write/edit/shell/run_tests/git_diff/list_directory) + registry.py
 ├── persistence/       # SQLAlchemy engine, models, repos (Postgres SQLite)
 ├── memory/            # ChromaDB store.py (multi-format ingest) + retrieve.py (hybrid) + summaries.py
-├── guardrails/        # input_guard, output_guard (PII), risk classification
+├── guardrails/        # input_guard, output_guard (PII + secret tokens), risk classification
 ├── cli/               # ingest.py, validate_runtime.py (`jarvis-validate-runtime`)
 └── config/            # settings loaded from .env
 ```
@@ -419,3 +499,15 @@ Approve / Deny for risky tool actions
 ✅ **Resilience** — LangGraph `InMemorySaver` checkpointer for interrupted
 run recovery; typed Ollama errors surface as clean HTTP statuses
 (503 / 502 / 507 / 504)
+✅ **Phase 4B hardening** — durable approvals/sessions (TTL + SQL-backed,
+expired resumes rejected with 410), structured error bodies
+(`error`/`message`/`suggested_action`), retry with backoff + OOM→CPU fallback,
+end-to-end trace ids + bounded trace registry (`GET /traces/recent`),
+per-session bearer tokens (`GET /sessions/{id}/token`), rate limiting (429),
+and secret-token redaction in guardrails — all covered by permanent
+regression suites (417 tests passing, ruff clean)
+
+## Docs
+
+See `docs/api.md` for the full endpoint reference and `docs/troubleshooting.md`
+for common issues and fixes.

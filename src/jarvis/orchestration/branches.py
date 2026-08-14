@@ -65,6 +65,7 @@ def _structured_request_log(
     num_batch: int,
     fallback: bool = False,
     error_category: str | None = None,
+    attempt: int | None = None,
 ) -> None:
     """Emit one structured INFO line per local model request.
 
@@ -77,11 +78,110 @@ def _structured_request_log(
     est_ctx = sum(estimate_tokens(getattr(m, "content", "") if hasattr(m, "content") else str(m)) for m in (messages or []))
     logger.info(
         "model_request | branch=%s model=%s intent=%s complexity=%s est_ctx_tokens=%d "
-        "num_ctx=%d num_batch=%d duration_ms=%.0f partial_offload=unknown fallback=%s error=%s",
+        "num_ctx=%d num_batch=%d duration_ms=%.0f partial_offload=unknown fallback=%s "
+        "attempt=%s error=%s",
         branch, model_name, intent, complexity, est_ctx,
         num_ctx, num_batch, duration_ms,
-        fallback, error_category or "none",
+        fallback, attempt if attempt is not None else "-", error_category or "none",
     )
+
+
+def _invoke_branch_llm(
+    state: JarvisState,
+    *,
+    branch: str,
+    model_name: str,
+    llm,
+    messages: list,
+    bound_tools: list,
+) -> object:
+    """Invoke *llm* with bounded retry + graceful GPU→CPU fallback.
+
+    * Transient failures (server unreachable, request timeout) are retried
+      up to ``settings.retry_max_attempts`` with linear backoff.
+    * An out-of-memory error under full GPU offload retries once on CPU
+      (``num_gpu=0``) when ``settings.gpu_fallback_to_cpu`` is enabled, and
+      marks ``state["fallback_used"]`` / ``state["warning"]`` so the UI can
+      tell the user generation is running on CPU.
+    * Permanent errors (missing model, non-retryable) raise immediately as
+      their typed error.
+    """
+    attempts = max(1, settings.retry_max_attempts)
+    backoff = max(0.0, settings.retry_backoff_seconds)
+    started = time.monotonic()
+
+    for attempt in range(1, attempts + 1):
+        try:
+            response = llm.invoke(messages)
+            _structured_request_log(
+                branch=branch, model_name=model_name,
+                intent=state.get("intent", branch),
+                complexity=state.get("complexity", "easy"),
+                messages=messages, duration_ms=(time.monotonic() - started) * 1000,
+                num_ctx=settings.ollama_context_length, num_batch=settings.ollama_num_batch,
+                attempt=attempt,
+            )
+            return response
+        except Exception as exc:  # noqa: BLE001 — classify + re-raise a typed error
+            category, err_type = _classify_ollama_error(exc)
+            retryable = err_type in (OllamaUnavailableError, OllamaRequestTimeoutError)
+            _structured_request_log(
+                branch=branch, model_name=model_name,
+                intent=state.get("intent", branch),
+                complexity=state.get("complexity", "easy"),
+                messages=messages, duration_ms=(time.monotonic() - started) * 1000,
+                num_ctx=settings.ollama_context_length, num_batch=settings.ollama_num_batch,
+                error_category=category, attempt=attempt,
+            )
+            if retryable and attempt < attempts:
+                delay = backoff * attempt
+                logger.warning(
+                    "%s branch attempt %d/%d failed (%s) — retrying in %.1fs",
+                    branch, attempt, attempts, category, delay,
+                )
+                time.sleep(delay)
+                continue
+
+            # Graceful GPU -> CPU degradation for OOM under full GPU offload.
+            if (
+                err_type is OllamaOutOfMemoryError
+                and settings.gpu_fallback_to_cpu
+                and not getattr(llm, "_force_cpu", False)
+            ):
+                logger.warning("%s branch OOM — retrying once on CPU", branch)
+                cpu_llm = get_model_named(model_name, intent=branch, force_cpu=True)
+                cpu_llm._force_cpu = True
+                cpu_bound = cpu_llm.bind_tools(bound_tools)
+                try:
+                    response = cpu_bound.invoke(messages)
+                    state["fallback_used"] = "gpu_to_cpu"
+                    state["warning"] = (
+                        "GPU offload failed (model + context too large for VRAM) — "
+                        "fell back to CPU. Expect slower generation."
+                    )
+                    _structured_request_log(
+                        branch=branch, model_name=model_name,
+                        intent=state.get("intent", branch),
+                        complexity=state.get("complexity", "easy"),
+                        messages=messages, duration_ms=(time.monotonic() - started) * 1000,
+                        num_ctx=settings.ollama_context_length, num_batch=settings.ollama_num_batch,
+                        fallback=True,
+                    )
+                    return response
+                except Exception as exc2:  # noqa: BLE001
+                    category2, err_type2 = _classify_ollama_error(exc2)
+                    _structured_request_log(
+                        branch=branch, model_name=model_name,
+                        intent=state.get("intent", branch),
+                        complexity=state.get("complexity", "easy"),
+                        messages=messages, duration_ms=(time.monotonic() - started) * 1000,
+                        num_ctx=settings.ollama_context_length, num_batch=settings.ollama_num_batch,
+                        error_category=category2, fallback=True,
+                    )
+                    raise err_type2(f"{category2}: {exc2}") from exc2
+
+            raise err_type(f"{category}: {exc}") from exc
+    raise RuntimeError("unreachable: retry loop exhausted")  # pragma: no cover
 
 
 # ---------------------------------------------------------------------------
@@ -125,25 +225,13 @@ def run_general_branch(state: JarvisState) -> JarvisState:
     state["selection_reason"] = f"general branch using {model_name}"
 
     llm = get_model_named(model_name, intent="general").bind_tools(GENERAL_BOUND_TOOLS)
-    started = time.monotonic()
-    try:
-        response = llm.invoke(state["messages"])
-    except Exception as exc:  # noqa: BLE001 — classify + re-raise a typed error
-        category, err_type = _classify_ollama_error(exc)
-        _structured_request_log(
-            branch="general", model_name=model_name,
-            intent=state.get("intent", "general"), complexity=state.get("complexity", "easy"),
-            messages=state["messages"], duration_ms=(time.monotonic() - started) * 1000,
-            num_ctx=settings.ollama_context_length, num_batch=settings.ollama_num_batch,
-            error_category=category,
-        )
-        raise err_type(f"{category}: {exc}") from exc
-    duration_ms = (time.monotonic() - started) * 1000
-    _structured_request_log(
-        branch="general", model_name=model_name,
-        intent=state.get("intent", "general"), complexity=state.get("complexity", "easy"),
-        messages=state["messages"], duration_ms=duration_ms,
-        num_ctx=settings.ollama_context_length, num_batch=settings.ollama_num_batch,
+    response = _invoke_branch_llm(
+        state,
+        branch="general",
+        model_name=model_name,
+        llm=llm,
+        messages=state["messages"],
+        bound_tools=GENERAL_BOUND_TOOLS,
     )
     state["messages"].append(response)
 
@@ -188,25 +276,13 @@ def run_coding_branch(state: JarvisState) -> JarvisState:
     state["selection_reason"] = f"coding branch using {model_name}"
 
     llm = get_model_named(model_name, intent="coding").bind_tools(CODING_BOUND_TOOLS)
-    started = time.monotonic()
-    try:
-        response = llm.invoke(state["messages"])
-    except Exception as exc:  # noqa: BLE001
-        category, err_type = _classify_ollama_error(exc)
-        _structured_request_log(
-            branch="coding", model_name=model_name,
-            intent=state.get("intent", "coding"), complexity=state.get("complexity", "easy"),
-            messages=state["messages"], duration_ms=(time.monotonic() - started) * 1000,
-            num_ctx=settings.ollama_context_length, num_batch=settings.ollama_num_batch,
-            error_category=category,
-        )
-        raise err_type(f"{category}: {exc}") from exc
-    duration_ms = (time.monotonic() - started) * 1000
-    _structured_request_log(
-        branch="coding", model_name=model_name,
-        intent=state.get("intent", "coding"), complexity=state.get("complexity", "easy"),
-        messages=state["messages"], duration_ms=duration_ms,
-        num_ctx=settings.ollama_context_length, num_batch=settings.ollama_num_batch,
+    response = _invoke_branch_llm(
+        state,
+        branch="coding",
+        model_name=model_name,
+        llm=llm,
+        messages=state["messages"],
+        bound_tools=CODING_BOUND_TOOLS,
     )
     state["messages"].append(response)
 

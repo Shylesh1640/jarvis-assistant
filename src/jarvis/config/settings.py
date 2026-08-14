@@ -64,6 +64,30 @@ class Settings(BaseSettings):
     # After how many (user, assistant) turns a conversation is summarized.
     summary_every_turns: int = 10
 
+    # --- Error handling / retry ---
+    # Retries for *transient* Ollama failures (server down mid-flight,
+    # request timeouts). Persistent errors (model missing, OOM) do NOT count
+    # as retryable and surface immediately. 1 = no retries.
+    retry_max_attempts: int = 3
+    # Base sleep between retries; each attempt backs off linearly
+    # (backoff, 2*backoff, ...). Seconds.
+    retry_backoff_seconds: float = 1.0
+    # When an OOM happens with full GPU offload, retry once with num_gpu=0
+    # (CPU) instead of failing the request. The response warns the user.
+    gpu_fallback_to_cpu: bool = True
+
+    # --- Security ---
+    # Requests per minute allowed from a single session (or client IP).
+    # 0 disables rate limiting. Kept generous by default so interactive
+    # usage is never throttled; tune per deployment.
+    rate_limit_per_minute: int = 300
+    # When True, /chat and /tasks require a valid per-session token (issued
+    # via GET /sessions/{session_id}/token) and reject cross-session access.
+    require_session_token: bool = False
+    # Emit JSON-formatted logs for easy parsing. Disabled by default so the
+    # dev console stays human-readable.
+    json_logs_enabled: bool = False
+
     # --- UI / request toggles ---
     # Default answer style emitted in the system prompt when the client
     # doesn't request one: "" | "concise" | "detailed" | "code". Empty

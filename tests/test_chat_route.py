@@ -161,7 +161,7 @@ def test_approval_resume_without_pending_returns_400(client):
         "/chat", json={"session_id": "ghost", "message": "", "approved": True}
     )
     assert r.status_code == 400
-    assert "No pending approval" in r.json()["detail"]
+    assert "No pending approval" in r.json()["message"]
 
 
 def test_approval_resume_after_expiry_returns_410(client, monkeypatch):
@@ -180,7 +180,8 @@ def test_approval_resume_after_expiry_returns_410(client, monkeypatch):
         "/chat", json={"session_id": "s1", "message": "", "approved": True}
     )
     assert r.status_code == 410
-    assert "expired" in r.json()["detail"]
+    assert "expired" in r.json()["message"]
+    assert r.json()["error"] == "approval_expired"
     # The expired approval was consumed and must not resume.
     assert "s1" not in routes.chat._pending_approvals
 

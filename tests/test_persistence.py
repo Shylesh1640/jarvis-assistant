@@ -4,6 +4,8 @@ Uses an in-memory SQLite engine swapped in via ``reset_engine_for_tests``
 so the suite never touches a real Postgres or a disk file. Each test gets
 a fresh schema (tables are created after the engine reset).
 """
+import datetime
+
 import pytest
 
 from jarvis.persistence import create_all, repos
@@ -90,29 +92,76 @@ def test_summary_latest_none_for_unknown_session():
 
 
 # ---------------------------------------------------------------------------
-# approvals
+# approvals (durable, TTL'd)
 # ---------------------------------------------------------------------------
 
 
-def test_approval_put_get_pop():
-    repos.approvals.put("s1", state={"x": 1}, pending_action="run_shell('ls')")
-    row = repos.approvals.get("s1")
+def test_approval_create_get_pending():
+    repos.approvals.create(
+        "appv-1",
+        session_id="s1",
+        state={"x": 1},
+        expires_at=datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=5),
+        tool_name="write_file",
+        arguments={"file_path": "a.txt"},
+        tool_calls=[{"name": "write_file", "args": {"file_path": "a.txt"}}],
+        risk_level="medium",
+        pending_action="write_file(file_path='a.txt')",
+    )
+    row = repos.approvals.get("appv-1")
     assert row is not None
     assert row.state["x"] == 1
-    assert row.pending_action == "run_shell('ls')"
+    assert row.status == "pending"
+    assert row.tool_name == "write_file"
+    assert row.pending_action == "write_file(file_path='a.txt')"
 
-    popped = repos.approvals.pop("s1")
+    # get_pending finds the row for the session.
+    pending = repos.approvals.get_pending("s1")
+    assert pending is not None
+    assert pending.id == "appv-1"
+    assert repos.approvals.get_pending("ghost") is None
+
+
+def test_approval_pop_pending_removes_row():
+    repos.approvals.create(
+        "appv-2",
+        session_id="s1",
+        state={"a": 1},
+        expires_at=datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=5),
+    )
+    popped = repos.approvals.pop_pending("s1")
     assert popped is not None
-    assert repos.approvals.get("s1") is None
-    second = repos.approvals.pop("s1")
-    assert second is None
+    assert popped.id == "appv-2"
+    assert repos.approvals.get_pending("s1") is None
 
 
-def test_approval_clear_idempotent():
-    repos.approvals.clear("s1")  # no row -> no error
-    repos.approvals.put("s1", state={"a": 1}, pending_action=None)
-    repos.approvals.clear("s1")
-    repos.approvals.clear("s1")  # idempotent
+def test_approval_set_status_and_cancel_all():
+    repos.approvals.create(
+        "appv-3", session_id="s1", state={"a": 1},
+        expires_at=datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=5),
+    )
+    repos.approvals.set_status("appv-3", "approved")
+    assert repos.approvals.get("appv-3").status == "approved"
+    # No longer returned as pending.
+    assert repos.approvals.get_pending("s1") is None
+
+    repos.approvals.create(
+        "appv-4", session_id="s2", state={"a": 1},
+        expires_at=datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=5),
+    )
+    repos.approvals.cancel_all_for_session("s2")
+    assert repos.approvals.get("appv-4").status == "cancelled"
+
+
+def test_approval_purge_expired_marks_rows_expired():
+    future = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=5)
+    past = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=5)
+    repos.approvals.create("keep", session_id="s1", state={}, expires_at=future)
+    repos.approvals.create("stale", session_id="s2", state={}, expires_at=past)
+    purged = repos.approvals.purge_expired()
+    assert purged == 1
+    assert repos.approvals.get("keep").status == "pending"
+    assert repos.approvals.get("stale").status == "expired"
 
 
 # ---------------------------------------------------------------------------
@@ -124,10 +173,13 @@ def test_task_create_get_mark_done():
     repos.tasks.create("t1", description="design X", session_id="s1")
     row = repos.tasks.get("t1")
     assert row is not None
-    assert row.status == "pending"
+    assert row.status == "queued"
 
     repos.tasks.mark_running("t1")
     assert repos.tasks.get("t1").status == "running"
+
+    repos.tasks.update_stage("t1", "running tests…")
+    assert repos.tasks.get("t1").stage == "running tests…"
 
     repos.tasks.mark_done("t1", result="done")
     done = repos.tasks.get("t1")
@@ -142,6 +194,32 @@ def test_task_mark_failed():
     row = repos.tasks.get("t2")
     assert row.status == "failed"
     assert row.error == "kaboom"
+
+
+def test_task_waiting_for_approval_and_cancel():
+    repos.tasks.create("t3", description="risky", session_id="s1")
+    repos.tasks.mark_waiting_for_approval(
+        "t3",
+        approval_id="appv-9",
+        pending_action="write_file(a.txt)",
+        pending_tool_calls=[{"name": "write_file", "args": {"file_path": "a.txt"}}],
+    )
+    row = repos.tasks.get("t3")
+    assert row.status == "waiting_for_approval"
+    assert row.approval_id == "appv-9"
+
+    repos.tasks.mark_cancelled("t3", error="denied")
+    assert repos.tasks.get("t3").status == "cancelled"
+
+
+def test_task_recover_stale():
+    repos.tasks.create("t6", description="orphaned")
+    repos.tasks.mark_running("t6")
+    n = repos.tasks.recover_stale()
+    assert n == 1
+    row = repos.tasks.get("t6")
+    assert row.status == "failed"
+    assert "restart" in (row.error or "")
 
 
 def test_task_get_missing_returns_none():

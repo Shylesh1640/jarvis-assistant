@@ -79,3 +79,56 @@ def test_redact_does_not_touch_short_digit_runs():
 def test_redact_preserves_normal_periods_in_sentences():
     out = redact_output("This sentence is fine. So is this one.")
     assert out == "This sentence is fine. So is this one."
+
+
+# ---------------------------------------------------------------------------
+# Secret redaction
+# ---------------------------------------------------------------------------
+
+
+def test_redact_aws_access_key():
+    out = redact_output("use AKIAIOSFODNN7EXAMPLE for access")
+    assert "[redacted-aws-key]" in out
+    assert "AKIAIOSFODNN7EXAMPLE" not in out
+
+
+def test_redact_openai_style_token():
+    out = redact_output("key=sk-proj-abc123xyz456")
+    assert "[redacted-token]" in out
+    assert "sk-proj-abc123xyz456" not in out
+
+
+def test_redact_github_pat():
+    out = redact_output("ghp_1234567890abcdefghijklmnopqrstuvwxyz")
+    assert "[redacted-token]" in out
+
+
+def test_redact_slack_token():
+    out = redact_output("xoxb-123456789012-1234567890123-abcdef")
+    assert "[redacted-token]" in out
+
+
+def test_redact_api_key_assignment():
+    out = redact_output("API_KEY = sk-abc123")
+    assert "[redacted-secret]" in out
+    assert "sk-abc123" not in out
+
+
+def test_redact_password_assignment():
+    out = redact_output("password: hunter2")
+    assert "[redacted-secret]" in out
+
+
+def test_redact_private_key_block():
+    body = (
+        "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBA\n-----END RSA PRIVATE KEY-----"
+    )
+    out = redact_output(f"here: {body}")
+    assert "[redacted-private-key]" in out
+    assert "MIIEowIBA" not in out
+
+
+def test_redact_secret_only_when_assigned():
+    out = redact_output("The API key was rotated yesterday")
+    assert "[redacted-secret]" not in out
+    assert "The API key was rotated yesterday" == out

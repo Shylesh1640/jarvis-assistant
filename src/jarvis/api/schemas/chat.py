@@ -4,6 +4,7 @@ from pydantic import BaseModel
 
 class ChatRequest(BaseModel):
     session_id: str = "default"
+    session_token: str | None = None
     message: str = ""
     history: list[dict[str, str]] = []
     # Optional snippet the user highlighted in a previous assistant message.
@@ -36,16 +37,33 @@ class ChatResponse(BaseModel):
     sources: list[dict] = []
     # Raw retrieved-context block, exposed for the UI debug view.
     retrieved_context: str | None = None
+    fallback_used: bool = False
+    warning: str | None = None
 
 
 class TaskCreateRequest(BaseModel):
     description: str
     session_id: str | None = None
+    session_token: str | None = None
+
+
+class TaskApprovalRequest(BaseModel):
+    """Decision body for POST /tasks/{task_id}/approve|deny."""
+
+    approved: bool = True
 
 
 class TaskStatusResponse(BaseModel):
     id: str
     status: str
     description: str
+    stage: str | None = None
     result: str | None = None
     error: str | None = None
+    approval_id: str | None = None
+    pending_action: str | None = None
+    pending_tool_calls: list[dict] = []
+    session_id: str | None = None
+    created_at: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None

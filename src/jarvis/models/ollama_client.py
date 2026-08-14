@@ -81,25 +81,28 @@ def _runtime_options() -> dict:
     return out
 
 
-def _build(model_name: str, temperature: float) -> ChatOllama:
+def _build(model_name: str, temperature: float, *, force_cpu: bool = False) -> ChatOllama:
     """Construct a ChatOllama with runtime options; model name authoritative."""
     opts = _runtime_options()
     opts["model"] = model_name
     opts["base_url"] = settings.ollama_base_url
     opts["temperature"] = temperature
+    if force_cpu:
+        # num_gpu=0 disables GPU offload entirely (pure CPU fallback).
+        opts["num_gpu"] = 0
     return ChatOllama(**opts)
 
 
-def get_general_model(temperature: float = 0.4) -> ChatOllama:
-    return _build(settings.general_model, temperature)
+def get_general_model(temperature: float = 0.4, *, force_cpu: bool = False) -> ChatOllama:
+    return _build(settings.general_model, temperature, force_cpu=force_cpu)
 
 
-def get_strong_local_model(temperature: float = 0.3) -> ChatOllama:
-    return _build(settings.strong_local_model, temperature)
+def get_strong_local_model(temperature: float = 0.3, *, force_cpu: bool = False) -> ChatOllama:
+    return _build(settings.strong_local_model, temperature, force_cpu=force_cpu)
 
 
-def get_coding_model(temperature: float = 0.2) -> ChatOllama:
-    return _build(settings.coding_model, temperature)
+def get_coding_model(temperature: float = 0.2, *, force_cpu: bool = False) -> ChatOllama:
+    return _build(settings.coding_model, temperature, force_cpu=force_cpu)
 
 
 # Per-intent default temperatures for dynamic model selection.
@@ -111,7 +114,11 @@ _TEMPERATURE_BY_INTENT = {
 
 
 def get_model_named(
-    model_name: str, intent: str = "general", temperature: float | None = None
+    model_name: str,
+    intent: str = "general",
+    temperature: float | None = None,
+    *,
+    force_cpu: bool = False,
 ) -> ChatOllama:
     """Build a ChatOllama for an explicitly-chosen model name.
 
@@ -119,12 +126,15 @@ def get_model_named(
     which model to run. If `temperature` is None we pick a sane default
     based on the branch intent.
 
+    Pass ``force_cpu=True`` to run with ``num_gpu=0`` (used by the graceful
+    GPU→CPU degradation path when the model doesn't fit in VRAM).
+
     The model name is the single source of truth for *which* model loads;
     runtime options only tune context/batch/keep-alive and never replace
     the model.
     """
     temp = temperature if temperature is not None else _TEMPERATURE_BY_INTENT.get(intent, 0.4)
-    return _build(model_name, temp)
+    return _build(model_name, temp, force_cpu=force_cpu)
 
 
 __all__ = [

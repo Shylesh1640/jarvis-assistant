@@ -1,25 +1,122 @@
 """FastAPI application entrypoint."""
 import logging
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
-from jarvis.config.settings import settings
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
+from jarvis.api.errors import (
+    APIError,
+    api_error_to_json,
+    build_error_body,
+    unexpected_error_to_json,
+)
 from jarvis.api.routes.chat import router as chat_router
 from jarvis.api.routes.documents import router as documents_router
 from jarvis.api.routes.runtime import router as runtime_router
+from jarvis.api.routes.sessions import router as sessions_router
 from jarvis.api.routes.tasks import router as tasks_router
+from jarvis.api.routes.traces import router as traces_router
+from jarvis.config.settings import settings
+from jarvis.observability.logging_config import setup_logging
 
+setup_logging()
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
     format="%(levelname)s %(name)s: %(message)s",
 )
 
-app = FastAPI(title="Jarvis Assistant API")
+
+def _startup() -> None:
+    """Idempotent one-time initialisation (tables, TTL sweep, task recovery)."""
+    try:
+        from jarvis.persistence import create_all
+        from jarvis.persistence.repo import repos
+
+        create_all()
+        repos.approvals.purge_expired()
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger("jarvis.api").warning("DB init failed: %s", exc)
+    try:
+        from jarvis.tasks.runner import recover_stale_tasks
+
+        n = recover_stale_tasks()
+        if n:
+            logging.getLogger("jarvis.api").info(
+                "Recovered %d stale task(s) from a previous process", n
+            )
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger("jarvis.api").warning("Stale-task recovery failed: %s", exc)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Run one-time init on startup; no teardown required."""
+    del app
+    _startup()
+    yield
+
+
+app = FastAPI(title="Jarvis Assistant API", version="0.2.0", lifespan=lifespan)
+
+
+@app.exception_handler(APIError)
+def _api_error_handler(request: Request, exc: APIError) -> JSONResponse:
+    return api_error_to_json(exc)
+
+
+@app.exception_handler(RequestValidationError)
+def _validation_error_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    errors = exc.errors()
+    first = errors[0] if errors else {}
+    field = ".".join(str(loc) for loc in first.get("loc", []) if loc not in ("body", "query"))
+    message = first.get("msg") or "Invalid request payload."
+    detail = f"{field}: {message}" if field else message
+    return JSONResponse(
+        status_code=422,
+        content=build_error_body(
+            422,
+            "validation_error",
+            detail,
+            suggested_action="Check the request fields and retry.",
+        ),
+    )
+
+
+@app.exception_handler(HTTPException)
+def _http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Convert legacy plain-``detail`` errors into the structured shape."""
+    detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+    headers = dict(exc.headers or {})
+    if getattr(exc, "retry_after_seconds", None) is not None:
+        headers.setdefault("Retry-After", str(exc.retry_after_seconds))
+    return JSONResponse(
+        status_code=exc.status_code or 400,
+        content=build_error_body(
+            exc.status_code or 400,
+            "request_failed",
+            detail,
+            suggested_action=None,
+        ),
+        headers=headers or None,
+    )
+
+
+@app.exception_handler(Exception)
+def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logging.getLogger("jarvis.api").exception("Unhandled exception on %s", request.url.path)
+    return unexpected_error_to_json(exc)
+
 
 app.include_router(chat_router)
 app.include_router(tasks_router)
 app.include_router(documents_router)
 app.include_router(runtime_router)
+app.include_router(sessions_router)
+app.include_router(traces_router)
 
 
 @app.get("/health")

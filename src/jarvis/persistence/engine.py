@@ -8,7 +8,7 @@ shared in-memory SQLite URL.
 from __future__ import annotations
 
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import Iterator
 
 from sqlalchemy import create_engine
@@ -27,8 +27,16 @@ _engine_lock = threading.Lock()
 _engine: Engine | None = None
 _SessionLocal: sessionmaker[Session] | None = None
 
+# Guards the shared single connection used by in-memory SQLite (StaticPool).
+# The task executor and request threads hit the same connection, so all
+# access is serialised for that engine type to avoid cursor corruption.
+_shared_conn_lock = threading.Lock()
+_is_static_pool = False
+
 
 def _build_engine(url: str) -> Engine:
+    global _is_static_pool
+    _is_static_pool = False
     connect_args = {}
     if url.startswith("sqlite"):
         connect_args["check_same_thread"] = False
@@ -36,6 +44,7 @@ def _build_engine(url: str) -> Engine:
         # connection (including background task worker threads) share the
         # same underlying in-memory database.
         if url.startswith("sqlite:///:memory:") or url == "sqlite://":
+            _is_static_pool = True
             return create_engine(
                 url,
                 future=True,
@@ -75,17 +84,25 @@ def SessionLocal() -> sessionmaker[Session]:  # noqa: N802 - mimic SQLAlchemy AP
 
 @contextmanager
 def get_session() -> Iterator[Session]:
-    """Yield a Session and commit/rollback/close around it."""
-    factory = _ensure_session_factory()
-    session = factory()
-    try:
-        yield session
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
+    """Yield a Session and commit/rollback/close around it.
+
+    In-memory SQLite uses a single shared StaticPool connection that the
+    task executor and request threads both hit, so access is serialised
+    with ``_shared_conn_lock`` to avoid cursor corruption. Other engines
+    (file SQLite, Postgres) get a per-connection pool and no lock.
+    """
+    lock = _shared_conn_lock if _is_static_pool else nullcontext()
+    with lock:
+        factory = _ensure_session_factory()
+        session = factory()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
 
 def create_all() -> None:

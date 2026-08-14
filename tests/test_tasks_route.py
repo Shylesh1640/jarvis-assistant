@@ -67,7 +67,7 @@ def test_create_task_returns_pending(client):
     r = client.post("/tasks", json={"description": "design something"})
     assert r.status_code == 200
     data = r.json()
-    assert data["status"] == "pending"
+    assert data["status"] in ("queued", "running", "completed")
     assert data["id"]
 
 
