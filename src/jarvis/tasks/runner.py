@@ -156,7 +156,10 @@ def _run(task_id: str, session_id: str, description: str, state: dict) -> None:
             finish_trace(trace)
             return
 
-        result = jarvis_graph.invoke(state)
+        result = jarvis_graph.invoke(
+            state,
+            config={"configurable": {"thread_id": f"jarvis-task:{task_id}"}},
+        )
 
         if result.get("approval_required"):
             _wait_for_approval(task_id, session_id, result, trace)

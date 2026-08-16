@@ -32,6 +32,7 @@ GENERAL_TOOLS: list = [
 ]
 
 CODING_TOOLS: list = [
+    calculator,
     search_code,
     read_file,
     list_directory,
