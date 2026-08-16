@@ -305,6 +305,46 @@ changes touched your model; no roll-back step reinstalls or re-pulls a model.
 uv run pytest
 ```
 
+## Terminal Test Suite (API E2E)
+
+Run a full terminal-based end-to-end API suite (no browser/Streamlit needed):
+
+```powershell
+.\tests\terminal_test_suite.ps1
+.\tests\terminal_test_suite.ps1 -VerboseMode
+.\tests\terminal_test_suite.ps1 --verbose
+```
+
+What it validates:
+
+- Health and diagnostics (`/health`, `/models`, `/documents/count`, `/runtime`)
+- Model routing behavior through `POST /chat`
+- Tool execution coverage (`calculator`, `search_code`, `read_file`, `list_directory`, `git_diff`)
+- Human approval flow for risky tools (approve/deny/expiry where feasible)
+- Background task lifecycle (`POST /tasks`, `GET /tasks/{id}`, cancel path)
+- Structured error handling and guardrail responses
+- Security controls (sensitive-file/path blocking, dangerous shell rejection, session isolation, rate-limit probe)
+- Persistence checks (optional restart-based validation)
+- Performance thresholds and GPU/runtime checks
+
+Expected output:
+
+- Per-test `[PASS]`, `[FAIL]`, or `[SKIP]` lines with category and reason
+- A final summary with pass/fail/skip totals
+- Exit code `0` when all required tests pass
+- Exit code `1` when any required test fails
+
+Troubleshooting:
+
+- Ensure backend is running at `http://127.0.0.1:8000` or pass `-BaseUrl`.
+- If complex cloud routing is unconfigured (`/models.complex.configured=false`), cloud-specific checks are skipped.
+- If Ollama is unavailable, tests requiring live local inference may fail or be skipped depending on category intent.
+- Rate-limit tests depend on `RATE_LIMIT_PER_MINUTE`; high limits may produce a skip instead of fail.
+- Persistence restart checks are opt-in:
+  - `-AllowRestart -RestartCommand "<your restart command>"`
+  - Use a command that restarts only the backend process for your environment.
+
+
 ## Configuration
 
 All settings live in `src/jarvis/config/settings.py` and are loaded from
