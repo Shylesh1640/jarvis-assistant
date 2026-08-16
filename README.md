@@ -315,6 +315,18 @@ Run a full terminal-based end-to-end API suite (no browser/Streamlit needed):
 .\tests\terminal_test_suite.ps1 --verbose
 ```
 
+Optional flags:
+
+- `-BaseUrl <url>` — backend base URL (default `http://127.0.0.1:8000`).
+- `-WorkspaceRoot <path>` — host directory mapped to the backend `WORKSPACE_DIR`,
+  used for direct filesystem effect assertions when running non-containerized.
+- `-SimulateOllamaDown` — stop the local Ollama process, verify a structured 503,
+  restart it. Runs in isolation (no other tests execute).
+- `-AllowRestart -RestartCommand "<cmd>"` — enable restart-based persistence checks.
+- `-SimplePromptMs / -ToolPromptMs / -RagPromptMs <ms>` — performance latency budgets.
+  Defaults are generous (60s / 90s / 120s) because local models on CPU are slow;
+  tighten them on fast GPU hardware to make the Performance tests real regression guards.
+
 What it validates:
 
 - Health and diagnostics (`/health`, `/models`, `/documents/count`, `/runtime`)
@@ -334,12 +346,29 @@ Expected output:
 - Exit code `0` when all required tests pass
 - Exit code `1` when any required test fails
 
+Behavior notes:
+
+- Model-dependent tests (tool execution, approval generation, guardrail refusals)
+  run each case in its **own fresh session** and retry up to three times. This is
+  deliberate: small local models degrade on long shared-session history and
+  occasionally answer without calling a tool. When the model does not cooperate
+  (no tool call / no refusal wording), the case reports `[SKIP]` with the reason
+  rather than a false `[FAIL]` — the backend path simply could not be exercised.
+- The suite runs against a containerized backend (Docker) when the model base URL
+  contains `host.docker.internal` / `docker.internal`. In that mode file side-effects
+  are verified via API read-back (a fresh-session `read_file` call) because the
+  backend writes into its own `workspace` volume, not the host directory. Cleanup
+  of residual container-workspace files is best-effort; see the INFO line printed at
+  the end.
+- `/runtime` reports `processor=Unknown` when the container lacks the `ollama` CLI /
+  `nvidia-smi`; that is explained by `warnings` and reported as a skip, not a failure.
+
 Troubleshooting:
 
 - Ensure backend is running at `http://127.0.0.1:8000` or pass `-BaseUrl`.
 - If complex cloud routing is unconfigured (`/models.complex.configured=false`), cloud-specific checks are skipped.
 - If Ollama is unavailable, tests requiring live local inference may fail or be skipped depending on category intent.
-- Rate-limit tests depend on `RATE_LIMIT_PER_MINUTE`; high limits may produce a skip instead of fail.
+- Rate-limit tests depend on `RATE_LIMIT_PER_MINUTE`; high limits produce a skip instead of fail.
 - Persistence restart checks are opt-in:
   - `-AllowRestart -RestartCommand "<your restart command>"`
   - Use a command that restarts only the backend process for your environment.
@@ -356,6 +385,13 @@ All settings live in `src/jarvis/config/settings.py` and are loaded from
 | `GENERAL_MODEL` | `qwen3:8b` | General chat (Q4_K_M) |
 | `STRONG_LOCAL_MODEL` | `qwen3:14b` | Medium/difficult general (Q4_K_M) |
 | `CODING_MODEL` / `CODING_MODEL_SMALL` | `qwen2.5-coder:7b-q5_K_M` / `qwen2.5-coder:7b-q5_K_M` | Coding branch (5-bit for syntax integrity) |
+
+> **Coding model must support native tool calling.** Both coding-branch models are
+> bound to the coding tools via Ollama function calling, so they must emit structured
+> `tool_calls` — not just reply in prose. `qwen2.5-coder:7b` does **not** reliably do
+> this in Ollama (it returns tool calls as JSON text in `content`), so set
+> `CODING_MODEL` / `CODING_MODEL_SMALL` to a tool-call-capable model such as
+> `qwen3:8b` or `qwen3-coder:30b` when the coding branch needs tools.
 | `EMBEDDING_MODEL` | `qwen3-embedding:latest` | Chroma embeddings |
 | `USE_STRONG_LOCAL` | `true` | Set `false` to keep general branch on `GENERAL_MODEL` |
 | `OPENROUTER_API_KEY` | _empty_ | Optional cloud fallback for the complex branch |

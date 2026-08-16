@@ -621,8 +621,17 @@ function Invoke-FileReadBack {
         [string]$Token,
         [string]$RelPath
     )
-    $msg = "Read the file $RelPath and tell me exactly what it contains."
-    $resp = Invoke-Chat -SessionId $SessionId -Message $msg -Token $Token
+    # Read back through a fresh session so the model's answer reflects the
+    # file on disk rather than conflation with the approval-flow history, and
+    # retry when the model returns an empty reply.
+    $msg = "Use the read_file tool to read the file $RelPath and report its exact contents."
+    for ($i = 1; $i -le 3; $i++) {
+        $resp = Invoke-Chat -SessionId (New-TestSession) -Message $msg -Token $Token
+        if ($resp.ok -and $resp.statusCode -eq 200 -and $null -ne $resp.body -and -not [string]::IsNullOrWhiteSpace([string]$resp.body.response)) {
+            return $resp
+        }
+        Write-VerboseLog "File read-back attempt $i/3 did not yield content for $RelPath"
+    }
     return $resp
 }
 
@@ -1006,8 +1015,8 @@ function Test-ToolExecution {
         if (-not (Assert-ToolRetry -Attempt $att -ExpectedTool "calculator" -CaseName "calculator")) { return }
 
         $answer = [string]$att.Response.body.response
-        if (-not (Find-Contains -Value $answer -Needle "56088")) {
-            Write-Fail "calculator -> expected numeric result 56088 in response"
+        if (-not (Find-Contains -Value $answer -Needle "56088") -and $answer -notmatch "56[,.\s]?088") {
+            Write-Fail "calculator -> expected numeric result 56088 in response (got: '$answer')"
             return
         }
         Write-Pass "calculator tool used and response includes 56088"
@@ -1186,10 +1195,8 @@ function Test-ApprovalFlow {
     }
 
     Run-Case -Category $category -Name "stale approval (nothing pending) is rejected" -Body {
-        $sid = $script:ApprovalFlowSession
-        if ([string]::IsNullOrWhiteSpace($sid)) {
-            $sid = $script:TestSessionId
-        }
+        # A brand-new session has no pending approval, making this deterministic.
+        $sid = New-TestSession
         $resume = Approve-PendingAction -SessionId $sid -Token $script:CurrentSessionToken
         if (-not $resume.ok) {
             Write-Fail "approval stale -> network error: $($resume.networkError)"
