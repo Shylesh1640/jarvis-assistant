@@ -201,11 +201,14 @@ function Invoke-Api {
         } else {
             Write-VerboseLog "HTTP $methodUpper $url via Invoke-WebRequest"
             $invokeParams = @{
-                Uri         = $url
-                Method      = $methodUpper
-                Headers     = $mergedHeaders
-                TimeoutSec  = $TimeoutSec
-                ErrorAction = "Stop"
+                Uri             = $url
+                Method          = $methodUpper
+                Headers         = $mergedHeaders
+                TimeoutSec      = $TimeoutSec
+                ErrorAction     = "Stop"
+                # Required on Windows PowerShell 5.1: without it Invoke-WebRequest
+                # tries to use the IE DOM parser and fails in non-interactive shells.
+                UseBasicParsing = $true
             }
             if ($null -ne $jsonBody) {
                 $invokeParams["Body"] = $jsonBody
@@ -220,7 +223,10 @@ function Invoke-Api {
                 }
             } catch {
                 $ex = $_.Exception
-                if ($null -eq $ex.Response) {
+                while ($ex -is [System.Net.WebException] -and $null -ne $ex.InnerException) {
+                    $ex = $ex.InnerException
+                }
+                if ($ex -isnot [System.Net.WebException] -or $null -eq $ex.Response) {
                     throw
                 }
                 $statusCode = [int]$ex.Response.StatusCode
