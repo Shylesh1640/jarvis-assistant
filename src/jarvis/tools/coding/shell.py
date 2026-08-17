@@ -1,10 +1,11 @@
 """Guarded shell-execution tool.
 
-``run_shell`` accepts a single command string. The first token must be
-an allowlisted command (see ``settings.shell_allowed_commands``);
-otherwise the call is refused. Destructive patterns are refused even
-inside the allowlist. The call is *always* classified as high risk by
-``guardrails.risk`` so it always pauses for approval.
+``run_shell`` accepts a single command string. The command must start
+with an allowlisted command (token-prefix match against
+``settings.shell_allowed_commands``); otherwise the call is refused.
+Destructive patterns are refused even inside the allowlist. The call is
+*always* classified as high risk by ``guardrails.risk`` so it always
+pauses for approval.
 """
 from __future__ import annotations
 
@@ -12,7 +13,6 @@ import logging
 import re
 import shlex
 import subprocess
-from collections.abc import Iterable
 
 from langchain_core.tools import tool
 
@@ -52,13 +52,17 @@ def _allowed_commands() -> set[str]:
     return {c.strip().lower() for c in raw.split(",") if c.strip()}
 
 
+def _parse_tokens(command: str) -> list[str]:
+    """Split *command* into tokens; fall back to whitespace split on quote errors."""
+    try:
+        return shlex.split(command, posix=True)
+    except ValueError:
+        return command.split()
+
+
 def _head_command(command: str) -> str | None:
     """Return the first token (lowercased) of *command*, or None on parse error."""
-    try:
-        tokens = shlex.split(command, posix=True)
-    except ValueError:
-        # Windows-style quoting: fall back to whitespace split.
-        tokens = command.split()
+    tokens = _parse_tokens(command)
     return tokens[0].lower() if tokens else None
 
 
@@ -67,20 +71,29 @@ def _has_blocked_pattern(command: str) -> bool:
 
 
 def is_safe_command(command: str) -> tuple[bool, str | None]:
-    """Return ``(allowed, reason)`` for a candidate shell command."""
+    """Return ``(allowed, reason)`` for a candidate shell command.
+
+    The command's token sequence must begin with an allowlisted prefix. A
+    multi-token entry like ``python -m pytest`` only grants commands that
+    start with ``python -m pytest`` (token-for-token), so ``python -c
+    '...'`` is refused — the head token alone is not sufficient.
+    """
     if not command or not command.strip():
         return False, "empty command"
     if _has_blocked_pattern(command):
         return False, "blocked destructive pattern"
     if _has_shell_metacharacters(command):
         return False, "shell metacharacters are not allowed"
-    head = _head_command(command)
-    if head is None:
+    tokens = _parse_tokens(command)
+    if not tokens:
         return False, "could not parse command"
-    allowed_multi = {a.split()[0].lower() for a in _allowed_commands() if a}
-    if head not in allowed_multi:
-        return False, f"command '{head}' is not in the allowlist"
-    return True, None
+    lower_tokens = [t.lower() for t in tokens]
+    allowed_prefixes = [a.split() for a in _allowed_commands() if a]
+    for prefix in allowed_prefixes:
+        if lower_tokens[: len(prefix)] == prefix:
+            return True, None
+    head = tokens[0].lower()
+    return False, f"command '{head}' is not in the allowlist"
 
 
 def _has_shell_metacharacters(command: str) -> bool:
@@ -134,10 +147,3 @@ def run_shell(command: str) -> str:
         f"--- stdout ---\n{stdout}"
         + (f"\n--- stderr ---\n{stderr}" if stderr else "")
     )
-
-
-def _summarize_lines(lines: Iterable[str], limit: int) -> str:
-    """Helper kept for tests; joins up to *limit* lines with ellipsis."""
-    taken = list(lines)[:limit]
-    suffix = "" if len(taken) < limit else "\n..."
-    return "\n".join(taken) + suffix

@@ -2,7 +2,7 @@
 
 This module owns the *only* place that decides what goes into the
 model's context window. Each branch calls ``build_final_messages(state)``
-(or ``build_final_prompt(state)`` for string-prompt paths) instead of
+(or ``build_final_chat_dicts(state)`` on the complex path) instead of
 assembling messages inline, so history truncation, system-prompt rules,
 and RAG marker formatting stay consistent across general / coding /
 complex branches.
@@ -290,35 +290,6 @@ def build_final_messages(state: JarvisState, s: Settings = settings) -> list[Bas
     return messages
 
 
-def build_final_prompt(state: JarvisState, s: Settings = settings) -> str:
-    """String-prompt form for branches that invoke with a single string (coding).
-
-    Layout (flattened):
-        [system prompt]
-        [retrieved context block]
-        [recent conversation: role: content per line]
-        [current user message]
-    """
-    sections: list[str] = [SYSTEM_PROMPT + style_reasoning_suffixes(state)]
-
-    retrieved = format_retrieved_context(state.get("retrieved_context", ""))
-    if retrieved:
-        sections.append(retrieved)
-
-    windowed = window_history_from_settings(state.get("history", []), s)
-    if windowed:
-        lines = [
-            f"{m.get('role', 'unknown')}: {m.get('content', '')}"
-            for m in windowed
-        ]
-        sections.append("Recent conversation:\n" + "\n".join(lines))
-
-    sections.append("Current request:\n" + build_user_message(state))
-    prompt = "\n\n".join(sections)
-    _log_context_size_str(state, prompt, s)
-    return prompt
-
-
 def build_final_chat_dicts(state: JarvisState, s: Settings = settings) -> list[dict[str, str]]:
     """OpenAI-style chat dicts for the OpenRouter complex path.
 
@@ -360,15 +331,6 @@ def _msg_text(msg: object) -> str:
 def _log_context_size(state: JarvisState, messages: list, s: Settings) -> None:
     original = _history_tokens(state.get("history", []))
     final = sum(estimate_tokens(_msg_text(m)) for m in messages)
-    logger.info(
-        "Context estimate: history=%d -> prompt=%d tokens (num_ctx=%d, max_turns=%d, budget=%d)",
-        original, final, s.ollama_context_length, s.history_max_turns, s.context_token_budget,
-    )
-
-
-def _log_context_size_str(state: JarvisState, prompt: str, s: Settings) -> None:
-    original = _history_tokens(state.get("history", []))
-    final = estimate_tokens(prompt)
     logger.info(
         "Context estimate: history=%d -> prompt=%d tokens (num_ctx=%d, max_turns=%d, budget=%d)",
         original, final, s.ollama_context_length, s.history_max_turns, s.context_token_budget,
@@ -419,7 +381,6 @@ __all__ = [
     "frame_user_message",
     "build_user_message",
     "build_final_messages",
-    "build_final_prompt",
     "build_final_chat_dicts",
     "build_retrieval_query",
 ]

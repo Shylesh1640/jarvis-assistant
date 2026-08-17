@@ -76,3 +76,25 @@ def test_runtime_options_honor_custom_num_gpu(monkeypatch):
 
     llm = _build("m", 0.4)
     assert llm.num_gpu == 24
+
+
+def test_get_router_model_uses_router_model_when_set(monkeypatch):
+    monkeypatch.setattr(settings, "router_model", "qwen3:0.6b")
+    monkeypatch.setattr(settings, "gpu_optimization_enabled", True)
+    from jarvis.models.ollama_client import get_router_model
+
+    llm = get_router_model()
+    assert llm.model == "qwen3:0.6b"
+    assert llm.temperature == 0.0
+    assert llm.options.get("format") == "json"
+
+
+def test_get_router_model_falls_back_to_general_model(monkeypatch):
+    monkeypatch.setattr(settings, "router_model", "")
+    monkeypatch.setattr(settings, "general_model", "qwen3:8b")
+    monkeypatch.setattr(settings, "gpu_optimization_enabled", True)
+    from jarvis.models.ollama_client import get_router_model
+
+    llm = get_router_model()
+    assert llm.model == "qwen3:8b"
+    assert llm.options.get("format") == "json"

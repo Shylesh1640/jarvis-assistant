@@ -367,3 +367,39 @@ def test_snapshot_multiple_models_recommendation(monkeypatch):
     monkeypatch.setattr(rd, "get_gpu_info", lambda: (None, []))
     snap = get_runtime_snapshot()
     assert any("OLLAMA_MAX_LOADED_MODELS=1" in r for r in snap["recommendations"])
+
+
+# ---------------------------------------------------------------------------
+# Container diagnostic warning (Docker honesty)
+# ---------------------------------------------------------------------------
+
+
+def test_probe_unavailable_detects_missing_tool():
+    import jarvis.models.runtime_diagnostics as rd
+
+    assert rd._probe_unavailable(["`ollama` CLI not found on PATH."], "ollama") is True
+    assert rd._probe_unavailable(["`ollama` CLI not found on PATH."], "nvidia-smi") is False
+    assert rd._probe_unavailable([], "ollama") is False
+
+
+def test_container_warning_only_when_missing_tool(monkeypatch):
+    import jarvis.models.runtime_diagnostics as rd
+
+    monkeypatch.setattr(rd, "_in_container", lambda: True)
+    warns: list[str] = []
+    rd._append_container_diagnostic_warning(warns, cli_missing=False, gpu_missing=False)
+    assert warns == []
+
+    rd._append_container_diagnostic_warning(warns, cli_missing=True, gpu_missing=False)
+    assert len(warns) == 1
+    assert "`ollama` CLI" in warns[0]
+    assert "container" in warns[0]
+
+
+def test_container_warning_skipped_outside_container(monkeypatch):
+    import jarvis.models.runtime_diagnostics as rd
+
+    monkeypatch.setattr(rd, "_in_container", lambda: False)
+    warns: list[str] = []
+    rd._append_container_diagnostic_warning(warns, cli_missing=True, gpu_missing=True)
+    assert warns == []

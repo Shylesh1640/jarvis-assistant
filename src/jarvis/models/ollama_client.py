@@ -60,33 +60,16 @@ def _runtime_options() -> dict:
                 )
         return out
     return opts
-    # num_batch / flash_attention / kv_cache_type are real Ollama request
-    # options but ChatOllama has no constructor field for them (extra='ignore'
-    # would silently drop them). We surface this so the user knows they must
-    # be set as server-side OLLAMA_* env vars on `ollama serve` instead.
-    for opt_name in ("num_batch", "flash_attention", "kv_cache_type"):
-        if opt_name == "num_batch" and settings.ollama_num_batch:
-            if "num_batch" not in supported:
-                logger.info(
-                    "OLLAMA_NUM_BATCH=%s is a server-side / request option not exposed by ChatOllama; set it via the Ollama server env or OLLAMA_NUM_BATCH.",
-                    settings.ollama_num_batch,
-                )
-        if opt_name in ("flash_attention", "kv_cache_type"):
-            val = getattr(settings, f"ollama_{opt_name}", None)
-            if val and opt_name not in supported:
-                logger.info(
-                    "OLLAMA_%s is not a direct ChatOllama field; configure it on the Ollama server (OLLAMA_%s) for it to take effect.",
-                    opt_name.upper(), opt_name.upper(),
-                )
-    return out
 
 
-def _build(model_name: str, temperature: float, *, force_cpu: bool = False) -> ChatOllama:
+def _build(model_name: str, temperature: float, *, force_cpu: bool = False, json_mode: bool = False) -> ChatOllama:
     """Construct a ChatOllama with runtime options; model name authoritative."""
     opts = _runtime_options()
     opts["model"] = model_name
     opts["base_url"] = settings.ollama_base_url
     opts["temperature"] = temperature
+    if json_mode:
+        opts["format"] = "json"
     if force_cpu:
         # num_gpu=0 disables GPU offload entirely (pure CPU fallback).
         opts["num_gpu"] = 0
@@ -97,12 +80,15 @@ def get_general_model(temperature: float = 0.4, *, force_cpu: bool = False) -> C
     return _build(settings.general_model, temperature, force_cpu=force_cpu)
 
 
-def get_strong_local_model(temperature: float = 0.3, *, force_cpu: bool = False) -> ChatOllama:
-    return _build(settings.strong_local_model, temperature, force_cpu=force_cpu)
+def get_router_model() -> ChatOllama:
+    """Build the small intent-classification model in JSON mode.
 
-
-def get_coding_model(temperature: float = 0.2, *, force_cpu: bool = False) -> ChatOllama:
-    return _build(settings.coding_model, temperature, force_cpu=force_cpu)
+    Uses ``router_model`` when set, else falls back to ``general_model``.
+    Runs at temperature 0 for deterministic labels. Fired only for
+    borderline prompts (see router_node), so latency stays predictable.
+    """
+    name = settings.router_model or settings.general_model
+    return _build(name, 0.0, json_mode=True)
 
 
 # Per-intent default temperatures for dynamic model selection.
@@ -139,7 +125,6 @@ def get_model_named(
 
 __all__ = [
     "get_general_model",
-    "get_strong_local_model",
-    "get_coding_model",
     "get_model_named",
+    "get_router_model",
 ]

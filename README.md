@@ -61,8 +61,10 @@ curl -X POST localhost:8000/tasks -H 'Content-Type: application/json' \
 curl localhost:8000/tasks/<task_id>
 ```
 
-Each task persists through `pending → running → completed/failed` in the
-DB. Tasks run with approvals auto-approved (there is no interactive user).
+Each task persists through `queued → running → completed/failed/cancelled`
+in the DB, pausing in `waiting_for_approval` when a risky tool call needs
+human sign-off (resolved via `POST /tasks/{id}/approve`, `/deny`, or
+`/cancel`).
 
 ## Security, errors and observability
 
@@ -90,8 +92,8 @@ metadata (`created_at`, `last_active_at`, `message_count`) via
 With `REQUIRE_SESSION_TOKEN=true`, `POST /chat` and `POST /tasks` require a
 token obtained from `GET /sessions/{session_id}/token`. Tokens are per-session
 (they cannot be replayed against another session), persisted in the DB, and
-rotated on each fetch. When disabled (default) the token is optional and only
-used to label the session.
+stable for the life of the session. When disabled (default) the token is
+optional and only used to label the session.
 
 ### Rate limiting
 
@@ -105,16 +107,19 @@ Every error response follows one shape:
 
 ```json
 {
-  "error": "model_unavailable",
-  "message": "Model 'qwen3:8b' was not found on the local Ollama server.",
-  "suggested_action": "Run `ollama pull qwen3:8b` and retry."
+  "error": "ollama_unavailable",
+  "message": "Ollama is not reachable. Check if the Ollama service is running.",
+  "suggested_action": "Start Ollama (`ollama serve`) and retry, or run as a background task."
 }
 ```
 
-Common codes: `model_not_found` (400/404), `model_unavailable` (503),
-`ollama_timeout` (504), `out_of_memory` (507, with optional CPU-retry hint),
-`validation_error`, `approval_expired` (410), `rate_limited` (429),
-`unauthorized` (401), `internal_error` (500). The exact code is stable for
+Common codes: `invalid_input` (400), `no_pending_approval` (400),
+`task_not_found` (404), `session_not_found` (404),
+`task_not_awaiting_approval` (409), `approval_expired` (410),
+`invalid_session_token` (403), `rate_limited` (429),
+`ollama_unavailable` (503), `model_not_found` (502),
+`request_timeout` (504), `out_of_memory` (507, with optional CPU-retry
+hint), `internal_error` (500). The exact code is stable for
 programmatic handling; `suggested_action` is a human-readable fix.
 
 ### Retry & GPU fallback
@@ -126,12 +131,12 @@ then carries a warning so you know the run was CPU-only.
 
 ### Observability
 
-Each request receives a **trace id** echoed as `trace_id` in the response and
-propagated to LangGraph runs, background tasks and errors. The server keeps a
-bounded in-memory trace registry of the most recent runs (`GET /traces/recent`)
-with per-node timing and durations. The Streamlit sidebar shows a "Traces"
-panel that refreshes these live; `JSON_LOGS_ENABLED=true` switches the log
-format to JSON for parsing.
+Each request receives a **trace id** propagated to LangGraph runs, background
+tasks and errors; the id is logged and recorded in the bounded in-memory trace
+registry of the most recent runs (`GET /traces/recent`) with per-node timing
+and durations. The Streamlit sidebar shows a "Traces" panel that refreshes
+these live; `JSON_LOGS_ENABLED=true` switches the log format to JSON for
+parsing.
 
 ### Secret-token redaction
 
@@ -193,8 +198,12 @@ changing, quantizing, downgrading, renaming, or replacing your current model.**
 
 ### What it does
 
-- Passes request-level options (`num_ctx`, `num_gpu`, `num_batch`,
-  `keep_alive`, `temperature`) to every local `ChatOllama` call from settings.
+- Passes request-level options (`num_ctx`, `num_gpu`, `keep_alive`,
+  `temperature`) to every local `ChatOllama` call from settings.
+  (`num_batch`, `flash_attention` and `kv_cache_type` are **not** applied
+  per-request — ChatOllama has no constructor field for them; configure them
+  server-side via `OLLAMA_NUM_BATCH` / `OLLAMA_FLASH_ATTENTION` /
+  `OLLAMA_KV_CACHE_TYPE` on `ollama serve`.)
 - **Forces full GPU offload** with `num_gpu=-1`. Every layer is placed on the
   GPU, so the model runs entirely in VRAM and **never spills into system RAM**;
   if it cannot fit in VRAM, Ollama refuses to load it instead of falling back
@@ -228,6 +237,25 @@ This optimization is **runtime-only**. It does not:
   (partial offload). Jarvis reports this honestly via `GET /runtime` and the
   Streamlit "GPU Runtime" sidebar, and recommends keeping a single model loaded
   when that happens.
+
+### Expected behavior when the strong local model exceeds VRAM
+
+`STRONG_LOCAL_MODEL` (e.g. `qwen3:14b`, ~9.3 GB) is used for
+medium/difficult general questions. With `OLLAMA_NUM_GPU=-1` Jarvis asks
+Ollama for *full* GPU offload: if the model + KV cache does **not** fit in
+dedicated VRAM (e.g. an 8 GB laptop GPU), Ollama refuses to load it, Jarvis
+catches the OOM (`507`) and, when `GPU_FALLBACK_TO_CPU=true`, retries once
+with `num_gpu=0` — so the request still completes but runs **100% on CPU**
+(noticeably slower, and the response carries a `warning` + `fallback_used:
+gpu_to_cpu`). This is by design, not a config error.
+
+- Smaller models that fit (e.g. `qwen3:8b`, ~5.2 GB) run 100% GPU.
+- Set `USE_STRONG_LOCAL=false` to keep medium/difficult general questions on
+  `GENERAL_MODEL` if you'd rather avoid the CPU fallback entirely.
+- `GET /runtime` reports the honest split (`100% GPU` / `Partial CPU/GPU` /
+  `100% CPU` / `Unknown`) based on what Ollama actually reports; in the
+  Docker backend it shows `Unknown` because the container lacks `ollama` /
+  `nvidia-smi` (see the Terminal Test Suite section).
 
 ### Verification commands (Windows PowerShell)
 
@@ -294,7 +322,7 @@ GPU_OPTIMIZATION_ENABLED=false
 ```
 
 That makes `_runtime_options()` return an empty dict — no `num_ctx` /
-`num_batch` / `keep_alive` request overrides are sent. To fully roll back all
+`num_gpu` / `keep_alive` request overrides are sent. To fully roll back all
 of the runtime variables to their defaults, delete (or comment out) the
 `--- GPU / Ollama runtime optimization ---` block from `.env`. None of these
 changes touched your model; no roll-back step reinstalls or re-pulls a model.
@@ -407,9 +435,9 @@ All settings live in `src/jarvis/config/settings.py` and are loaded from
 | `GPU_OPTIMIZATION_ENABLED` | `true` | Master switch for request-level Ollama runtime options |
 | `OLLAMA_NUM_GPU` | `-1` | Offload ALL layers to GPU (100% GPU, no system-RAM spill) |
 | `OLLAMA_CONTEXT_LENGTH` | `8192` | `num_ctx` sent per request |
-| `OLLAMA_NUM_BATCH` | `512` | `num_batch` prompt processing batch size |
-| `OLLAMA_FLASH_ATTENTION` | `1` | Request flash attention (requires Ollama >= 0.5) |
-| `OLLAMA_KV_CACHE_TYPE` | `q8_0` | KV cache quantization (q8_0 halves KV memory) |
+| `OLLAMA_NUM_BATCH` | `512` | `num_batch` prompt batch size — **server-side only** (not applied per-request by ChatOllama) |
+| `OLLAMA_FLASH_ATTENTION` | `1` | Flash attention — **server-side only** (requires Ollama >= 0.5; not applied per-request) |
+| `OLLAMA_KV_CACHE_TYPE` | `q8_0` | KV cache quantization (q8_0 halves KV memory) — **server-side only** (not applied per-request) |
 | `OLLAMA_KEEP_ALIVE` | `5m` | How long a model stays loaded in VRAM after last request |
 | `OLLAMA_NUM_PARALLEL` | `1` | Server-side: max concurrent requests Ollama serves |
 | `OLLAMA_MAX_LOADED_MODELS` | `1` | Server-side: max models loaded simultaneously |
@@ -475,6 +503,12 @@ classify_intent → build_context → route
 ```
 
 - **Routing** is conditional on `intent` (`general` / `coding` / `complex`).
+  `classify_intent` is hybrid: rules (word-count length + keyword boosts) run
+  first; for **borderline** prompts (medium-length, no decisive keyword) a
+  small router model (`ROUTER_MODEL`, default `GENERAL_MODEL`) is asked in
+  JSON mode to return `{"intent", "complexity"}`. Any router failure or
+  malformed reply falls back to the rules — `ROUTER_LLM_ENABLED=false`
+  disables the extra call for predictable latency.
 - **Tool registry** (`tools/registry.py`) is the single source of truth: each
   branch's LLM is bound to its own tool set (`GENERAL_BOUND_TOOLS` /
   `CODING_BOUND_TOOLS` = safe read-only tools + approval-gated write/exec
@@ -547,6 +581,10 @@ uv run pytest
 uv run ruff check .
 ```
 
+The suite measures coverage with `pytest-cov` (currently ~83% line coverage
+across `src/jarvis`). `--cov-fail-under=0` means coverage is reported, not
+enforced; raise it as coverage improves if you want a gate.
+
 ## Current status
 
 ✅ **Phase 1–2 (foundation + backend skeleton)** — Complete
@@ -591,7 +629,7 @@ expired resumes rejected with 410), structured error bodies
 end-to-end trace ids + bounded trace registry (`GET /traces/recent`),
 per-session bearer tokens (`GET /sessions/{id}/token`), rate limiting (429),
 and secret-token redaction in guardrails — all covered by permanent
-regression suites (417 tests passing, ruff clean)
+regression suites (442 tests passing, ruff clean)
 
 ## Docs
 

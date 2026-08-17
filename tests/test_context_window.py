@@ -15,7 +15,6 @@ from jarvis.orchestration.context_window import (
     SYSTEM_PROMPT,
     build_final_chat_dicts,
     build_final_messages,
-    build_final_prompt,
     build_retrieval_query,
     build_user_message,
     estimate_tokens,
@@ -244,34 +243,6 @@ def test_build_final_messages_selection_wraps_current_user():
     assert isinstance(last, HumanMessage)
     assert "yield from gen" in last.content
     assert "selected the following text" in last.content
-
-
-# ---------------------------------------------------------------------------
-# build_final_prompt  (flat string form used by coding branch)
-# ---------------------------------------------------------------------------
-
-
-def test_build_final_prompt_layout():
-    state = {
-        "user_input": "refactor this",
-        "history": [
-            {"role": "user", "content": "hi"},
-            {"role": "assistant", "content": "hello"},
-        ],
-        "retrieved_context": "ctx",
-    }
-    p = build_final_prompt(state)
-    # All sections should appear in order.
-    assert p.startswith(SYSTEM_PROMPT)
-    assert RETRIEVED_CONTEXT_OPEN in p
-    assert RETRIEVED_CONTEXT_CLOSE in p
-    assert "Recent conversation:" in p
-    assert "Current request:" in p
-    # Selection-aware user message when selected_text present.
-    state["selected_text"] = "x = 1"
-    p2 = build_final_prompt(state)
-    assert "selected the following text" in p2
-    assert "refactor this" in p2
 
 
 # ---------------------------------------------------------------------------

@@ -46,6 +46,7 @@ The structured snapshot shape (``get_runtime_snapshot``):
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -342,6 +343,12 @@ def get_runtime_snapshot() -> dict[str, Any]:
 
     warnings.extend(validate_runtime_settings())
 
+    _append_container_diagnostic_warning(
+        warnings,
+        cli_missing=_probe_unavailable(ps_warns, "ollama"),
+        gpu_missing=_probe_unavailable(gpu_warns, "nvidia-smi"),
+    )
+
     # The actually-loaded model is the first row of `ollama ps` (or /api/ps).
     loaded_model = ""
     processor_raw = ""
@@ -456,27 +463,47 @@ def _system_ram_used_mb() -> int | None:
         return None
 
 
-def estimate_adaptive_context_length(
-    vram_total_mb: int | None,
-    *,
-    base: int = 4096,
-    per_mb_token: float = 4.0,
-    max_ctx: int = 32768,
-) -> int:
-    """Estimate a safe ``num_ctx`` from available VRAM.
+def _in_container() -> bool:
+    """Best-effort container detection (Docker writes a sentinel file)."""
+    return os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
 
-    Heuristic: KV cache scales roughly with context length. Each token of
-    KV occupies ~0.25 MB for a 7B model at q8_0, so 1 MB of VRAM ~ 4 tokens
-    of context headroom. We never go below ``base`` (4096) and cap at
-    ``max_ctx`` (32768) so we don't oversubscribe. When VRAM is unknown,
-    return the conservative base.
+
+def _probe_unavailable(warnings: list[str], tool: str) -> bool:
+    """True when a probe warning says *tool* is not on PATH."""
+    return any("not found" in w and tool in w for w in warnings)
+
+
+def _append_container_diagnostic_warning(
+    warnings: list[str],
+    *,
+    cli_missing: bool,
+    gpu_missing: bool,
+) -> None:
+    """Consolidate the Docker limitation into one actionable warning.
+
+    Inside the container the `ollama` CLI and `nvidia-smi` are usually absent,
+    so `processor` / `gpu_name` / VRAM are reported as Unknown/null even though
+    the host has a working GPU. We keep the individual probe warnings and add a
+    single explanation with a fix, so the UI surfaces the reason instead of
+    looking like a broken deployment.
     """
-    if vram_total_mb is None or vram_total_mb <= 0:
-        return base
-    # Reserve ~60 % of VRAM for weights, use the rest as KV headroom.
-    kv_budget_mb = vram_total_mb * 0.4
-    estimated = int(kv_budget_mb * per_mb_token)
-    return max(base, min(estimated, max_ctx))
+    if not _in_container():
+        return
+    if not cli_missing and not gpu_missing:
+        return
+    missing = []
+    if cli_missing:
+        missing.append("the `ollama` CLI")
+    if gpu_missing:
+        missing.append("`nvidia-smi`")
+    warnings.append(
+        "Running inside a container: "
+        + " and ".join(missing)
+        + " are not available on PATH, so processor-split / VRAM diagnostics "
+        "show Unknown/null even though the host GPU exists. Run "
+        "`jarvis-validate-runtime` on the host (outside Docker) for accurate "
+        "GPU numbers, or mount the host binaries into the container."
+    )
 
 
 __all__ = [
@@ -487,5 +514,4 @@ __all__ = [
     "get_runtime_snapshot",
     "classify_processor",
     "get_ollama_version",
-    "estimate_adaptive_context_length",
 ]

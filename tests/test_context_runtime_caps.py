@@ -11,7 +11,6 @@ from jarvis.config.settings import settings
 from jarvis.orchestration.context_window import (
     SYSTEM_PROMPT,
     build_final_messages,
-    build_final_prompt,
     estimate_tokens,
     format_retrieved_context,
     frame_user_message,
@@ -68,17 +67,6 @@ def test_current_user_message_always_preserved():
     }
     msgs = build_final_messages(state)
     assert msgs[-1].content == "the current question"
-
-
-def test_system_and_user_preserved_in_string_prompt():
-    state = {
-        "user_input": "current ask",
-        "history": [{"role": "user", "content": "old"}] * 30,
-        "retrieved_context": "",
-    }
-    p = build_final_prompt(state)
-    assert p.startswith(SYSTEM_PROMPT)
-    assert "current ask" in p
 
 
 def test_total_context_bounded_by_caps(monkeypatch):

@@ -1,9 +1,5 @@
 """Central app settings loaded from environment variables."""
-import logging
-
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -15,6 +11,13 @@ class Settings(BaseSettings):
     coding_model: str = "qwen2.5-coder:7b-q5_K_M"  # 5-bit quantization to preserve syntax integrity
     coding_model_small: str = "qwen2.5-coder:7b-q5_K_M"  # same 5-bit coder for easy coding tasks
     embedding_model: str = "qwen3-embedding:latest"
+    # Small model used by the intent router to classify borderline prompts
+    # (JSON mode). Empty = reuse general_model. Fired only when the rules
+    # heuristic is indecisive (medium-length prompt, no decisive keyword).
+    router_model: str = ""
+    # Master switch for the router LLM. When False, classification is pure
+    # rules (latency stays predictable; borderline prompts fall to "general").
+    router_llm_enabled: bool = True
 
     # Whether to actually use the strong local model for medium/difficult
     # general tasks. When False, the general branch always uses general_model
@@ -40,6 +43,8 @@ class Settings(BaseSettings):
     # (NOT recommended).
     workspace_dir: str = "./workspace"
     # Shell commands the run_shell tool will accept without further review.
+    # Commands must START with an allowlisted entry (token-prefix match), so
+    # "python -m pytest" only grants `python -m pytest ...`, not any `python`.
     # Risk classification still applies; this only governs the allowlist.
     shell_allowed_commands: str = "ls,dir,cat,type,echo,git,pytest,python -m pytest,ruff,pip,uv,npm,npm run build,npm test"
     # Hard wall-clock cap for run_tests / run_shell invocations (seconds).
@@ -186,55 +191,10 @@ class Settings(BaseSettings):
     def complex_models(self) -> list[str]:
         return [m.strip() for m in self.complex_model_chain.split(",") if m.strip()]
 
-    def ollama_request_options(self) -> dict:
-        """Build the request-level ``options`` dict for ChatOllama.
-
-        Only keys actually supported by the installed langchain_ollama /
-        Ollama version are emitted, so we never send unsupported params.
-        Returns an empty dict when ``gpu_optimization_enabled`` is False.
-        """
-        if not self.gpu_optimization_enabled:
-            return {}
-        opts: dict = {"num_ctx": self.ollama_context_length}
-        if self.ollama_num_gpu != 0:
-            opts["num_gpu"] = self.ollama_num_gpu
-        if self.ollama_num_batch > 0:
-            opts["num_batch"] = self.ollama_num_batch
-        if self.ollama_flash_attention in (0, 1):
-            opts["flash_attention"] = bool(self.ollama_flash_attention)
-        if self.ollama_kv_cache_type:
-            opts["kv_cache_type"] = self.ollama_kv_cache_type
-        if self.ollama_keep_alive:
-            opts["keep_alive"] = self.ollama_keep_alive
-        return _filter_supported_options(opts)
-
 
 # ---------------------------------------------------------------------------
 # Compat gate: only emit Ollama options the installed version understands.
 # ---------------------------------------------------------------------------
-
-def _filter_supported_options(opts: dict) -> dict:
-    """Drop request options the installed Ollama build doesn't advertise.
-
-    We can't easily introspect the Ollama server for *request* option support,
-    so we allow-list keys known to be supported by Ollama >= 0.5 (which
-    predates the minimum langchain_ollama in this project). Unknown keys
-    pass through silently but we warn so the issue is visible.
-    """
-    known = {
-        "num_ctx", "num_batch", "temperature", "top_p", "top_k",
-        "num_predict", "stop", "seed", "keep_alive",
-        "flash_attention", "kv_cache_type", "num_gpu", "num_thread",
-        "main_gpu", "low_vram",
-    }
-    out: dict = {}
-    for k, v in opts.items():
-        if k in known:
-            out[k] = v
-        else:
-            logger.warning("Dropping unsupported Ollama option '%s' (not in known set)", k)
-    return out
-
 
 def validate_runtime_settings(s: "Settings | None" = None) -> list[str]:
     """Return a list of human-readable warning strings for bad runtime config.

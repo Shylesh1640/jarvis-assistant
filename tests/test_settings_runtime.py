@@ -1,5 +1,5 @@
 ﻿"""Tests for the GPU/runtime settings validation."""
-from jarvis.config.settings import Settings, _filter_supported_options, validate_runtime_settings
+from jarvis.config.settings import Settings, validate_runtime_settings
 
 
 def test_defaults_are_conservative():
@@ -79,23 +79,6 @@ def test_validate_runtime_settings_warns_on_bad_relevance_threshold():
     s = Settings(rag_relevance_threshold=5.0)
     warns = validate_runtime_settings(s)
     assert any("RELEVANCE_THRESHOLD" in w for w in warns)
-
-
-def test_filter_supported_options_drops_unknown_keys():
-    out = _filter_supported_options({
-        "num_ctx": 4096,            # known
-        "bogus_option": 123,        # unknown -> dropped
-        "temperature": 0.4,         # known
-    })
-    assert "num_ctx" in out
-    assert "temperature" in out
-    assert "bogus_option" not in out
-
-
-def test_filter_supported_options_keeps_known_set():
-    for k in ("num_ctx", "num_batch", "temperature", "keep_alive",
-              "flash_attention", "kv_cache_type", "num_predict"):
-        assert _filter_supported_options({k: 1}) == {k: 1}
 
 
 def test_auto_reindex_defaults_are_off():

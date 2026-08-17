@@ -36,5 +36,28 @@ jarvis-validate-runtime = "jarvis.cli.validate_runtime:main"
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "pytest-cov>=6.2.0",
     "ruff>=0.15.21",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=jarvis --cov-report=term-missing:skip-covered --cov-fail-under=0"
+
+[tool.coverage.run]
+source = ["src/jarvis"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+skip_empty = true
+exclude_lines = [
+    "pragma: no cover",
+    "pragma: nocover",
+    "if TYPE_CHECKING:",
+    "def __repr__",
+    "def __str__",
+    "raise NotImplementedError",
+]
+

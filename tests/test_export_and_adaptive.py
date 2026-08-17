@@ -1,4 +1,4 @@
-"""Tests for the Streamlit markdown exporter and the adaptive context estimator."""
+"""Tests for the Streamlit markdown exporter."""
 from __future__ import annotations
 
 import ast
@@ -6,8 +6,6 @@ import types
 from pathlib import Path
 
 import pytest
-
-from jarvis.models.runtime_diagnostics import estimate_adaptive_context_length
 
 
 @pytest.fixture(scope="module")
@@ -56,27 +54,3 @@ def test_export_includes_metadata_line(app_module):
 def test_export_empty_returns_header(app_module):
     md = app_module.export_conversation_to_markdown([])
     assert md.startswith("# Jarvis Conversation Export")
-
-
-# ---------------------------------------------------------------------------
-# adaptive context estimator
-# ---------------------------------------------------------------------------
-
-def test_unknown_vram_returns_base():
-    assert estimate_adaptive_context_length(None) == 4096
-    assert estimate_adaptive_context_length(0) == 4096
-
-
-def test_adaptive_scales_with_vram():
-    big = estimate_adaptive_context_length(24576)   # 24 GB
-    small = estimate_adaptive_context_length(4096)  # 4 GB
-    assert big > small
-    assert big > 4096
-
-
-def test_adaptive_capped_at_max():
-    assert estimate_adaptive_context_length(2**30) == 32768
-
-
-def test_adaptive_never_below_base():
-    assert estimate_adaptive_context_length(128) == 4096

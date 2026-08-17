@@ -1,7 +1,7 @@
 """Tests for the guarded ``run_shell`` tool."""
 import pytest
 
-from jarvis.tools.coding.shell import _summarize_lines, is_safe_command, run_shell
+from jarvis.tools.coding.shell import is_safe_command, run_shell
 
 
 @pytest.fixture
@@ -124,5 +124,49 @@ def test_run_shell_refuses_disallowed_head(workspace, monkeypatch):
     assert "allowlist" in out
 
 
-def test_summarize_lines_helper():
-    assert _summarize_lines(["a", "b", "c"], limit=2) == "a\nb\n..."
+# ---------------------------------------------------------------------------
+# Prefix matching: multi-token allowlist entries grant only that prefix
+# ---------------------------------------------------------------------------
+
+
+def test_multi_token_entry_allows_exact_prefix(monkeypatch):
+    _allow("python -m pytest", monkeypatch)
+    ok, reason = is_safe_command("python -m pytest tests/test_x.py")
+    assert ok is True, reason
+
+
+def test_multi_token_entry_refuses_different_head_args(monkeypatch):
+    _allow("python -m pytest", monkeypatch)
+    ok, reason = is_safe_command("python -c 'print(1)'")
+    assert ok is False
+    assert "allowlist" in reason
+
+
+def test_multi_token_entry_refuses_partial_prefix(monkeypatch):
+    _allow("python -m pytest", monkeypatch)
+    ok, reason = is_safe_command("python -m")
+    assert ok is False
+    assert "allowlist" in reason
+
+
+def test_single_token_entry_still_allows_subcommands(monkeypatch):
+    _allow("git", monkeypatch)
+    ok, reason = is_safe_command("git status")
+    assert ok is True, reason
+
+
+def test_default_allowlist_refuses_arbitrary_python(monkeypatch):
+    from jarvis.config.settings import settings
+
+    _allow(settings.shell_allowed_commands, monkeypatch)
+    ok, reason = is_safe_command("python -c 'print(1)'")
+    assert ok is False
+    assert "allowlist" in reason
+    ok, reason = is_safe_command("python -m pytest")
+    assert ok is True, reason
+
+
+def test_prefix_match_is_case_insensitive(monkeypatch):
+    _allow("GIT", monkeypatch)
+    ok, reason = is_safe_command("git status")
+    assert ok is True, reason

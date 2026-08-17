@@ -11,10 +11,10 @@ session-token mode.
 
 ### `GET /health`
 
-Liveness probe.
+Liveness probe plus Ollama reachability.
 
 ```json
-{ "status": "ok" }
+{ "status": "ok", "ollama_reachable": true }
 ```
 
 ### `GET /models`
@@ -23,8 +23,10 @@ Configured local + cloud models.
 
 ```json
 {
-  "local": { "general": "qwen3:8b", "coding": "qwen2.5-coder:7b-q5_K_M" },
-  "cloud": { "chain": ["claude-opus-4.1", "gpt-5.5", "gemini-2.5-pro"] }
+  "general": { "provider": "ollama", "model": "qwen3:8b", "base_url": "http://localhost:11434" },
+  "coding": { "provider": "ollama", "model": "qwen3:8b", "model_small": "qwen3:8b", "base_url": "http://localhost:11434" },
+  "strong_local": { "provider": "ollama", "model": "qwen3:14b", "base_url": "http://localhost:11434" },
+  "complex": { "provider": "openrouter", "models": ["claude-opus-4.1", "gpt-5.5", "gemini-2.5-pro"], "base_url": "https://openrouter.ai/api/v1", "configured": true }
 }
 ```
 
@@ -69,10 +71,13 @@ Response `200`:
   "tools_used": ["calculator"],
   "sources": [{"source": "docs/x.md", "chunk_id": "…"}],
   "retrieved_context": "…",
-  "trace_id": "tr-…",
+  "fallback_used": false,
   "warning": null
 }
 ```
+
+Note: the response does **not** carry a `trace_id` field; trace ids are
+recorded in logs and surfaced via `GET /traces/recent`.
 
 #### Approval flow
 
@@ -219,10 +224,10 @@ the HTTP `Retry-After` header.
 
 ```json
 {
-  "error": "model_unavailable",
-  "message": "…",
+  "error": "ollama_unavailable",
+  "message": "Ollama is not reachable. Check if the Ollama service is running.",
   "retry_after_seconds": 10,
-  "suggested_action": "…"
+  "suggested_action": "Start Ollama (`ollama serve`) and retry, or run as a background task."
 }
 ```
 
@@ -232,9 +237,9 @@ the HTTP `Retry-After` header.
 |---|---|---|
 | 400 | `invalid_input` | Guardrails rejected the prompt |
 | 400 | `no_pending_approval` | `approved: true` but nothing pending |
-| 400 | `session_not_found` | Session API missing row |
-| 401 | `unauthorized` | Missing/invalid session token |
+| 403 | `invalid_session_token` | Missing/invalid session token |
 | 404 | `task_not_found` | Unknown task id |
+| 404 | `session_not_found` | Session API missing row |
 | 409 | `task_not_awaiting_approval` | approve/deny on a non-waiting task |
 | 410 | `approval_expired` | Approval TTL elapsed; re-ask to restart |
 | 429 | `rate_limited` | Too many requests; retry after `Retry-After` |
@@ -249,8 +254,8 @@ the HTTP `Retry-After` header.
 With `REQUIRE_SESSION_TOKEN=false` (default) `session_token` is optional —
 used only to label the session. With it `true`, `POST /chat` and `POST /tasks`
 require a valid token for the given `session_id`; cross-session replay yields
-`401 unauthorized`. Tokens come from `GET /sessions/{session_id}/token` and
-are per-session only.
+`403 invalid_session_token`. Tokens come from `GET /sessions/{session_id}/token`
+and are per-session only.
 
 ## Rate limiting
 
@@ -260,6 +265,7 @@ Excess requests get `429 rate_limited` with a `Retry-After` header.
 
 ## Trace ids
 
-Chat/task responses and errors carry `trace_id`. The same id is propagated
-to LangGraph runs, background tasks, and the trace registry —
-`GET /traces/recent` surfaces recent ids for debugging.
+Each request is assigned a `trace_id` recorded in the logs and propagated to
+LangGraph runs, background tasks, and the in-memory trace registry —
+`GET /traces/recent` surfaces recent ids for debugging. The id is **not**
+included in chat/task response bodies or error bodies.
