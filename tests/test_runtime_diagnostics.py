@@ -6,6 +6,7 @@ running Ollama server.
 from __future__ import annotations
 
 import httpx
+import pytest
 
 from jarvis.models.runtime_diagnostics import (
     classify_processor,
@@ -14,6 +15,43 @@ from jarvis.models.runtime_diagnostics import (
     get_runtime_snapshot,
 )
 from jarvis.config.settings import settings
+
+
+@pytest.fixture(autouse=True)
+def _no_platform_probes(monkeypatch):
+    """Keep snapshot tests hermetic: never call the real docker/wsl CLI.
+
+    Snapshot tests exercise the Ollama/GPU path; Docker/WSL platform probes
+    are replaced with a benign empty result so no subprocess ever runs.
+    """
+    import jarvis.models.runtime_diagnostics as rd
+
+    monkeypatch.setattr(
+        rd,
+        "get_docker_wsl_diagnostics",
+        lambda: {
+            "docker": {
+                "cli_available": False,
+                "daemon_reachable": False,
+                "containers": [],
+                "disk_usage": {},
+                "warnings": [],
+            },
+            "wsl": {
+                "available": False,
+                "wsl2_enabled": False,
+                "default_distro": None,
+                "distributions": [],
+                "config_present": False,
+                "config_keys": {},
+                "warnings": [],
+            },
+        },
+    )
+    import jarvis.config.runtime_capabilities as rc
+
+    monkeypatch.setattr(rc.settings, "runtime_mode", "local")
+    monkeypatch.setattr(rc.settings, "postgres_dsn", "")
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +328,17 @@ def test_snapshot_shape_has_required_fields():
         "context", "parallel",
     ):
         assert key in snap, f"missing {key}"
+
+
+def test_snapshot_has_runtime_and_platform_blocks():
+    snap = get_runtime_snapshot()
+    assert snap["runtime"]["runtime_mode"] in ("local", "docker")
+    assert snap["runtime"]["database_backend"] in ("sqlite", "postgresql")
+    assert snap["runtime"]["vector_store_backend"] == "chroma_embedded"
+    assert snap["runtime"]["task_backend"] == "in_process"
+    assert snap["runtime"]["docker_detected"] is False
+    assert snap["docker"]["daemon_reachable"] is False
+    assert snap["wsl"]["available"] is False
 
 
 def test_snapshot_reports_active_model_and_names_and_context(monkeypatch):

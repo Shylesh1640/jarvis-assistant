@@ -137,6 +137,46 @@ def fetch_runtime() -> dict | None:
         return None
 
 
+def _runtime_mode_summary(snap: dict | None) -> dict:
+    """Pure helper: turn a /runtime snapshot into display lines for the UI.
+
+    Returns a dict with the fields the sidebar renders. Kept free of
+    ``st.*`` calls so it can be unit-tested without importing Streamlit:
+        {
+          "available": bool,
+          "mode": str,                  # local | docker
+          "database_backend": str,
+          "vector_store_backend": str,
+          "task_backend": str,
+          "docker_required": bool,
+          "docker_detected": bool,
+          "docker_containers": int,
+          "wsl2_enabled": bool,
+          "wsl_default_distro": str | None,
+          "wsl_config_keys": list[str],  # present tuning keys, never values
+          "warnings": list[str],
+        }
+    """
+    rt = (snap or {}).get("runtime") or {}
+    docker = (snap or {}).get("docker") or {}
+    wsl = (snap or {}).get("wsl") or {}
+    cfg_keys = wsl.get("config_keys") or {}
+    return {
+        "available": bool(rt),
+        "mode": rt.get("runtime_mode", "local"),
+        "database_backend": rt.get("database_backend", "?"),
+        "vector_store_backend": rt.get("vector_store_backend", "?"),
+        "task_backend": rt.get("task_backend", "?"),
+        "docker_required": bool(rt.get("docker_required")),
+        "docker_detected": bool(docker.get("daemon_reachable")),
+        "docker_containers": len(docker.get("containers") or []),
+        "wsl2_enabled": bool(wsl.get("wsl2_enabled")),
+        "wsl_default_distro": wsl.get("default_distro"),
+        "wsl_config_keys": [k for k, v in cfg_keys.items() if v],
+        "warnings": list(rt.get("warnings") or []),
+    }
+
+
 def export_conversation_to_markdown(messages: list[dict]) -> str:
     """Serialise the conversation to a Markdown string."""
     lines = ["# Jarvis Conversation Export\n"]
@@ -720,6 +760,35 @@ with st.sidebar:
         )
     else:
         st.caption("Runtime diagnostics unavailable (backend /runtime not reachable).")
+
+    st.subheader("Runtime mode", divider=False)
+    snap = st.session_state.runtime_snap
+    rt_sum = _runtime_mode_summary(snap)
+    if rt_sum["available"]:
+        if rt_sum["mode"] == "docker":
+            st.badge("Docker", icon=":material/docker:", color="purple")
+        else:
+            st.badge("Local (no Docker)", icon=":material/memory:", color="green")
+        st.caption(
+            f"DB: `{rt_sum['database_backend']}` | Vector: `{rt_sum['vector_store_backend']}` | "
+            f"Tasks: `{rt_sum['task_backend']}`"
+        )
+        if rt_sum["docker_required"]:
+            st.caption("Docker **required** for this mode.")
+            if not rt_sum["docker_detected"]:
+                st.warning("Docker mode configured but the daemon is not reachable.", icon=":material/error:")
+        else:
+            st.caption("Docker **not required** — everything runs locally.")
+        if rt_sum["docker_detected"]:
+            st.caption(f"Docker daemon up · {rt_sum['docker_containers']} running container(s)")
+        if rt_sum["wsl2_enabled"] or rt_sum["wsl_default_distro"]:
+            st.caption(f"WSL: {'WSL2' if rt_sum['wsl2_enabled'] else 'WSL'} · default: {rt_sum['wsl_default_distro'] or 'none'}")
+        if rt_sum["wsl_config_keys"]:
+            st.caption("`.wslconfig` tuning keys present: " + ", ".join(rt_sum["wsl_config_keys"]))
+        for w in rt_sum["warnings"][:3]:
+            st.info(w, icon=":material/info:")
+    else:
+        st.caption("Runtime mode unavailable (backend /runtime not reachable).")
 
     st.subheader("RAG store", divider=False)
     count = fetch_doc_count()

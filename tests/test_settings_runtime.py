@@ -85,3 +85,27 @@ def test_auto_reindex_defaults_are_off():
     s = Settings()
     assert s.auto_reindex_enabled is False
     assert s.auto_reindex_interval == 300
+
+
+def test_runtime_mode_defaults_to_local():
+    s = Settings()
+    assert s.runtime_mode == "local"
+    assert validate_runtime_settings(s) == []
+
+
+def test_runtime_mode_invalid_warns():
+    s = Settings(runtime_mode="banana")
+    warns = validate_runtime_settings(s)
+    assert any("RUNTIME_MODE" in w and "invalid" in w for w in warns)
+
+
+def test_runtime_mode_docker_without_postgres_warns():
+    s = Settings(runtime_mode="docker", postgres_dsn="")
+    warns = validate_runtime_settings(s)
+    assert any("RUNTIME_MODE=docker" in w and "POSTGRES_DSN" in w for w in warns)
+
+
+def test_runtime_mode_local_with_postgres_warns():
+    s = Settings(runtime_mode="local", postgres_dsn="postgresql+psycopg://u:p@h/db")
+    warns = validate_runtime_settings(s)
+    assert any("RUNTIME_MODE=local" in w and "POSTGRES_DSN" in w for w in warns)

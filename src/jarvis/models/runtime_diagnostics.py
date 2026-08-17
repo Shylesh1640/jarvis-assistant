@@ -41,6 +41,11 @@ The structured snapshot shape (``get_runtime_snapshot``):
       "context": dict,              # num_ctx / num_batch / cap settings
       "parallel": dict,             # num_parallel / max_loaded_models
       "recommendations": list[str],
+      "runtime": dict,              # capabilities object (runtime_mode,
+                                    # database/vector/task backends,
+                                    # docker_required / docker_detected)
+      "docker": dict,               # Docker daemon/container/disk status
+      "wsl": dict,                  # WSL distro/.wslconfig presence
     }
 """
 from __future__ import annotations
@@ -54,7 +59,9 @@ from typing import Any
 
 import httpx
 
+from jarvis.config.runtime_capabilities import get_runtime_capabilities
 from jarvis.config.settings import settings, validate_runtime_settings
+from jarvis.models.platform_diagnostics import get_docker_wsl_diagnostics
 
 logger = logging.getLogger(__name__)
 
@@ -372,6 +379,14 @@ def get_runtime_snapshot() -> dict[str, Any]:
         vram=gpu,
     )
 
+    # Runtime capabilities + Docker/WSL blocks (best-effort, never raises).
+    docker_wsl = get_docker_wsl_diagnostics()
+    docker_detected = docker_wsl["docker"].get("daemon_reachable", False)
+    capabilities = get_runtime_capabilities(docker_reachable=docker_detected)
+    warnings.extend(capabilities["warnings"])
+    warnings.extend(docker_wsl["docker"].get("warnings", []))
+    warnings.extend(docker_wsl["wsl"].get("warnings", []))
+
     snap: dict[str, Any] = {
         "ollama_reachable": reachable,
         "ollama_version": version,
@@ -417,6 +432,9 @@ def get_runtime_snapshot() -> dict[str, Any]:
             "kv_cache_type": settings.ollama_kv_cache_type,
             "keep_alive": settings.ollama_keep_alive,
         },
+        "runtime": capabilities,
+        "docker": docker_wsl["docker"],
+        "wsl": docker_wsl["wsl"],
     }
     return snap
 

@@ -61,6 +61,20 @@ class Settings(BaseSettings):
     # How long a pending approval stays valid before it expires (seconds).
     approval_ttl_seconds: int = 600
 
+    # --- Runtime mode ---
+    # Which runtime the assistant runs in. One of:
+    #   local  = lightweight local runtime (SQLite + embedded vector store,
+    #            tasks in-process). No Docker required. This is the default
+    #            and is fully supported by the codebase.
+    #   docker = Docker-backed persistence (Postgres) / containerized
+    #            deployment. Adds optional Postgres; requires POSTGRES_DSN.
+    #   auto   = prefer local; use Docker-backed services only when they are
+    #            actually configured and reachable.
+    # This setting is advisory for diagnostics/validation — the effective
+    # backend still follows POSTGRES_DSN (empty => SQLite) for behaviour
+    # compatibility.
+    runtime_mode: str = "local"
+
     # --- Persistence ---
     # Postgres DSN. When empty the app falls back to a local SQLite file at
     # ``sqlite_path`` so the assistant still works without Docker.
@@ -242,6 +256,21 @@ def validate_runtime_settings(s: "Settings | None" = None) -> list[str]:
         )
     if s.history_max_turns < 1:
         warnings.append("HISTORY_MAX_TURNS < 1 disables history entirely.")
+    if s.runtime_mode not in ("local", "docker", "auto"):
+        warnings.append(
+            f"RUNTIME_MODE='{s.runtime_mode}' is invalid; use 'local', 'docker' or 'auto'."
+        )
+    if s.runtime_mode == "local" and s.postgres_dsn:
+        warnings.append(
+            "RUNTIME_MODE=local does not require Docker. POSTGRES_DSN is set, so the "
+            "app will still use Postgres — for a pure local deployment clear "
+            "POSTGRES_DSN or set RUNTIME_MODE=docker."
+        )
+    if s.runtime_mode == "docker" and not s.postgres_dsn:
+        warnings.append(
+            "RUNTIME_MODE=docker expects POSTGRES_DSN; with it empty the app falls "
+            "back to SQLite (still works without Docker)."
+        )
     return warnings
 
 

@@ -447,6 +447,7 @@ All settings live in `src/jarvis/config/settings.py` and are loaded from
 | `WORKSPACE_DIR` | `./workspace` | Root that write/edit/shell coding tools are confined to |
 | `SHELL_ALLOWED_COMMANDS` | `pwd,ls,cat,...` | Allowlist prefix for `run_shell` |
 | `TOOL_SUBPROCESS_TIMEOUT` | `60` | Seconds before a shell subprocess is killed |
+| `RUNTIME_MODE` | `local` | `local` (SQLite + embedded store, no Docker) / `docker` (Postgres via compose) / `auto` (prefer local) |
 | `POSTGRES_DSN` | _empty_ | `postgresql+psycopg://…`; empty → local SQLite fallback |
 | `SQLITE_PATH` | `./data/jarvis.db` | Fallback DB file when no Postgres DSN |
 | `SUMMARY_EVERY_TURNS` | `10` | Periodic summarization cadence (pairs of turns) |
@@ -566,13 +567,87 @@ classify_intent → build_context → route
   checkpointer, so interrupted runs can be resumed and tool-loop state is
   preserved across requests in-process.
 
-## Run with Docker (persistence)
+## Runtime modes & Docker usage
+
+The assistant runs in one of two runtime modes (see `RUNTIME_MODE` in
+`.env`; example profiles in `.env.local.example` and `.env.docker.example`):
+
+* **local** (default) — SQLite persistence, embedded ChromaDB vector store,
+  in-process task executor. **No Docker is required or contacted.** Ollama
+  runs on the host. This is the mode most people should use.
+* **docker** — adds optional Postgres persistence via `docker-compose.yml`.
+  Everything else (Chroma, tasks, Ollama) stays on the host / in-process.
+* **auto** — prefers local, and only switches to Docker when `POSTGRES_DSN`
+  is set *and* the Docker daemon is reachable.
+
+`GET /runtime` reports the resolved mode plus Docker/WSL status:
+`runtime` (capabilities), `docker` (daemon reachable, running containers,
+disk usage), and `wsl` (WSL2, default distro, which `.wslconfig` tuning keys
+are present — never their values).
+
+### Is Docker required?
+
+No. Everything works without Docker:
+| Feature | Local (no Docker) | Docker mode |
+|---|---|---|
+| Chat / routing / tools | ✅ | ✅ |
+| RAG (ChromaDB) | ✅ embedded store | ✅ embedded store |
+| Sessions / messages / approvals | ✅ SQLite | ✅ Postgres (compose) |
+| Background tasks | ✅ in-process | ✅ in-process |
+| Ollama (models) | ✅ host | ✅ host |
+
+Docker only replaces SQLite with Postgres and can containerize the
+backend/frontend for deployment. If you don't need Postgres, stay in local
+mode — the app never probes or requires Docker there.
+
+### Running with Docker (optional Postgres persistence)
 
 ```bash
+# Docker mode (Postgres persistence)
+copy .env.docker.example .env     # sets RUNTIME_MODE=docker + POSTGRES_DSN
 docker compose up -d postgres
-# then start the backend as usual — with POSTGRES_DSN set it uses Postgres,
-# otherwise it falls back to SQLite automatically.
+uv run uvicorn jarvis.api.main:app --host 0.0.0.0 --port 8000
+
+# Full containerized stack (backend + frontend in containers)
+docker compose up -d --build
 ```
+
+Local mode needs none of that:
+
+```bash
+# Local mode (SQLite + embedded Chroma, no Docker)
+copy .env.local.example .env      # sets RUNTIME_MODE=local (or omit entirely)
+uv run uvicorn jarvis.api.main:app --host 0.0.0.0 --port 8000
+```
+
+### Validating the runtime
+
+```bash
+uv run jarvis-validate-runtime                 # resolved mode
+uv run jarvis-validate-runtime --mode local    # SQLite + Chroma writability
+uv run jarvis-validate-runtime --mode docker   # compose services reachable
+```
+
+The validation CLI is read-only: it never starts, stops, prunes, pulls, or
+modifies anything. Docker-mode checks confirm the CLI exists, the daemon is
+reachable, the compose services are running, and the configured Postgres
+endpoint answers.
+
+### Docker / WSL resource guidance (read-only tips)
+
+Docker Desktop + WSL2 use RAM on your machine. These tips are informational —
+the app never adjusts your system:
+
+* WSL2 memory defaults to a share of host RAM. To cap it, create/edit
+  `%USERPROFILE%\.wslconfig` (Windows) — e.g. `memory=8GB`,
+  `processors=4`, `swap=2GB`, `[wsl2] autoMemoryReclaim=gradual` — then
+  restart WSL (`wsl --shutdown`, Docker Desktop will restart with it).
+* Docker Desktop has a "Resources → Memory" slider; raise it if Postgres
+  container stalls, lower it if your host (or Ollama VRAM budget) is tight.
+* The `/runtime` endpoint's `wsl` block shows whether those tuning keys are
+  present, so you can verify `.wslconfig` took effect — it never reads the
+  values.
+* Check disk usage any time with `docker system df` (safe, read-only).
 
 ## Tests
 
@@ -629,7 +704,14 @@ expired resumes rejected with 410), structured error bodies
 end-to-end trace ids + bounded trace registry (`GET /traces/recent`),
 per-session bearer tokens (`GET /sessions/{id}/token`), rate limiting (429),
 and secret-token redaction in guardrails — all covered by permanent
-regression suites (442 tests passing, ruff clean)
+regression suites (491 tests passing, ruff clean)
+✅ **Phase 4C — runtime modes & operational hardening** — explicit
+`RUNTIME_MODE` (local/docker/auto) with capabilities reporting on `/runtime`,
+read-only Docker + WSL diagnostics (daemon, containers, disk, `.wslconfig`
+key *presence* only — never values), `jarvis-validate-runtime --mode
+local|docker`, `env.local/docker.example` profiles, Streamlit runtime-mode
+panel, and safe Docker/WSL resource guidance — all covered by unit tests
+that run without Docker, WSL, GPU, or Ollama installed
 
 ## Docs
 
