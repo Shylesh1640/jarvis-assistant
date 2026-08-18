@@ -27,6 +27,17 @@ class Settings(BaseSettings):
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     complex_model_chain: str = "anthropic/claude-opus-4.1,openai/gpt-5.5,google/gemini-2.5-pro"
+    # Phase 7 :: performance / cost guardrails for the cloud (OpenRouter) path.
+    # Estimated prompt-token ceiling before a cloud call is allowed. 0 =
+    # unlimited (legacy behaviour). A prompt over this cap falls back to the
+    # local general branch instead of spending on a huge cloud request.
+    cloud_max_prompt_tokens: int = 0
+    # Daily cloud-spend budget in USD. 0 = unlimited (legacy). When the
+    # accumulated estimated spend crosses this budget, cloud calls are
+    # refused for the rest of the day and the complex branch falls back to
+    # local models. Estimates are rough (prompt-only, $/1M tokens per model
+    # table) — an explicit guard against runaway spend, not an invoice.
+    cloud_daily_budget_usd: float = 0.0
 
     app_env: str = "development"
     log_level: str = "INFO"
@@ -58,6 +69,15 @@ class Settings(BaseSettings):
     # Maximum LLM tool-loop rounds per turn for the general and coding
     # branches. When reached the graph stops and returns a clear message.
     max_tool_iterations: int = 5
+    # Maximum number of steps a background task's plan may contain. A
+    # planning node decomposes a long-running prompt into at most this many
+    # steps before execution. 0 = no planning node (legacy: the whole prompt
+    # runs as one graph invocation).
+    max_plan_steps: int = 8
+    # Hard wall-clock cap for a single background task (seconds). 0 =
+    # unlimited (legacy behaviour). When exceeded, the task is cancelled
+    # with a clear error instead of running forever.
+    max_task_duration_seconds: int = 0
     # How long a pending approval stays valid before it expires (seconds).
     approval_ttl_seconds: int = 600
 
@@ -127,6 +147,10 @@ class Settings(BaseSettings):
     default_show_reasoning: bool = False
 
     # --- Context-window management ---
+    # Master switch for the whole RAG pipeline. When False, build_context
+    # never queries the vector store and no retrieved context is injected.
+    # The document store itself is left untouched (uploads/ingest still work).
+    rag_enabled: bool = True
     # Max number of (user, assistant) history turns to keep in the prompt.
     # Older turns are dropped before sending. 20 turns = up to 40 messages.
     history_max_turns: int = 20
@@ -156,6 +180,30 @@ class Settings(BaseSettings):
     # Hard cap (tokens) for the highlighted selected_text snippet, again so
     # a giant paste cannot dominate the context window. 0 = unbounded.
     selected_text_token_cap: int = 1024
+
+    # --- Phase 5 :: RAG retrieval quality ---
+    # Preferred Phase 5 names for the RAG quality knobs. The legacy fields
+    # above (rag_relevance_threshold / rerank_keyword_weight) remain
+    # honoured for backward compatibility — see the resolvers below.
+    #
+    # Minimum relevance score (cosine similarity, 0..1) for retrieved chunks.
+    # Chroma reports *distance*; this setting is expressed as similarity so
+    # RAG_MIN_RELEVANCE_SCORE=0.5 means distance <= 0.5. Mirrors the legacy
+    # rag_relevance_threshold. 0 disables the gate.
+    rag_min_relevance_score: float = 0.5
+    # Independent weights for the hybrid retrieval combination. When only one
+    # is set, the other is implied as (1 - set). When both are None the
+    # legacy single-knob `rerank_keyword_weight` is used, so existing configs
+    # keep their exact behaviour.
+    rag_vector_weight: float | None = None
+    rag_keyword_weight: float | None = None
+    # When False, retrieval is pure vector similarity (the BM25 layer is
+    # skipped entirely), matching "vector-only" mode.
+    rag_rerank_enabled: bool = True
+    # Cap on the number of chunks returned per distinct source after rerank.
+    # 0 = unlimited. Prevents a single large document from dominating the
+    # retrieved context at the expense of other relevant sources.
+    retrieval_per_source_limit: int = 0
 
     # --- GPU / Ollama runtime optimization (request-level options) ---
     # Master switch; when False the runtime-options block below is skipped
@@ -204,6 +252,56 @@ class Settings(BaseSettings):
     @property
     def complex_models(self) -> list[str]:
         return [m.strip() for m in self.complex_model_chain.split(",") if m.strip()]
+
+    # ------------------------------------------------------------------
+    # Phase 5 :: backward-compatible resolvers for the RAG quality knobs.
+    # The legacy fields (rag_relevance_threshold, rerank_keyword_weight)
+    # keep working unchanged; the new Phase 5 fields take precedence when
+    # they are actually set.
+    # ------------------------------------------------------------------
+
+    @property
+    def effective_relevance_threshold(self) -> float:
+        """Relevance gate in *distance* units (Chroma cosine distance).
+
+        ``rag_min_relevance_score`` is expressed as similarity (0..1).
+        The legacy ``rag_relevance_threshold`` was already distance units.
+        When the new field holds its default we defer to the legacy field
+        so existing configs are untouched; 0 disables the gate.
+        """
+        if self.rag_min_relevance_score != 0.5 or self.rag_relevance_threshold == 0.5:
+            return self.rag_min_relevance_score
+        return self.rag_relevance_threshold
+
+    @property
+    def effective_vector_weight(self) -> float:
+        """Vector weight for hybrid retrieval (0..1).
+
+        Falls back to ``1 - rerank_keyword_weight`` for the legacy
+        single-knob config. When the new two-weight settings are both set
+        they are normalised so they sum to 1.
+        """
+        v = self.rag_vector_weight
+        k = self.rag_keyword_weight
+        if v is not None and k is not None:
+            total = (v + k) or 1.0
+            return max(0.0, min(1.0, v / total))
+        if v is not None:
+            return max(0.0, min(1.0, v))
+        legacy_kw = max(0.0, min(1.0, self.rerank_keyword_weight))
+        return 1.0 - legacy_kw
+
+    @property
+    def effective_keyword_weight(self) -> float:
+        v = self.rag_vector_weight
+        k = self.rag_keyword_weight
+        if v is not None and k is not None:
+            total = (v + k) or 1.0
+            return max(0.0, min(1.0, k / total))
+        if k is not None:
+            return max(0.0, min(1.0, k))
+        legacy_kw = max(0.0, min(1.0, self.rerank_keyword_weight))
+        return legacy_kw
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +352,31 @@ def validate_runtime_settings(s: "Settings | None" = None) -> list[str]:
             "RAG_RELEVANCE_THRESHOLD should be in (0, 1]; ~0.5 for qwen3-embedding. "
             "0 disables the relevance gate."
         )
+    if not (0.0 <= s.rag_min_relevance_score <= 2.0):
+        warnings.append(
+            "RAG_MIN_RELEVANCE_SCORE should be in (0, 1]; ~0.5 for qwen3-embedding. "
+            "0 disables the relevance gate."
+        )
+    if s.rag_vector_weight is not None and not (0.0 <= s.rag_vector_weight <= 1.0):
+        warnings.append("RAG_VECTOR_WEIGHT must be in [0, 1].")
+    if s.rag_keyword_weight is not None and not (0.0 <= s.rag_keyword_weight <= 1.0):
+        warnings.append("RAG_KEYWORD_WEIGHT must be in [0, 1].")
+    if s.rag_vector_weight is not None and s.rag_keyword_weight is not None:
+        total = s.rag_vector_weight + s.rag_keyword_weight
+        if total <= 0:
+            warnings.append(
+                "RAG_VECTOR_WEIGHT + RAG_KEYWORD_WEIGHT must be > 0 (both are zero)."
+            )
+    if s.retrieval_per_source_limit < 0:
+        warnings.append("RETRIEVAL_PER_SOURCE_LIMIT must be >= 0 (0 = unlimited).")
+    if s.max_plan_steps < 0:
+        warnings.append("MAX_PLAN_STEPS must be >= 0 (0 = no planning node).")
+    if s.max_task_duration_seconds < 0:
+        warnings.append("MAX_TASK_DURATION_SECONDS must be >= 0 (0 = unlimited).")
+    if s.cloud_max_prompt_tokens < 0:
+        warnings.append("CLOUD_MAX_PROMPT_TOKENS must be >= 0 (0 = unlimited).")
+    if s.cloud_daily_budget_usd < 0:
+        warnings.append("CLOUD_DAILY_BUDGET_USD must be >= 0 (0 = unlimited).")
     if s.history_max_turns < 1:
         warnings.append("HISTORY_MAX_TURNS < 1 disables history entirely.")
     if s.runtime_mode not in ("local", "docker", "auto"):

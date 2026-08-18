@@ -13,7 +13,10 @@ from jarvis.api.errors import (
     unexpected_error_to_json,
 )
 from jarvis.api.routes.chat import router as chat_router
+from jarvis.api.routes.cost import router as cost_router
 from jarvis.api.routes.documents import router as documents_router
+from jarvis.api.routes.feedback import router as feedback_router
+from jarvis.api.routes.memory import router as memory_router
 from jarvis.api.routes.runtime import router as runtime_router
 from jarvis.api.routes.sessions import router as sessions_router
 from jarvis.api.routes.tasks import router as tasks_router
@@ -126,6 +129,9 @@ def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONRespon
 app.include_router(chat_router)
 app.include_router(tasks_router)
 app.include_router(documents_router)
+app.include_router(memory_router)
+app.include_router(feedback_router)
+app.include_router(cost_router)
 app.include_router(runtime_router)
 app.include_router(sessions_router)
 app.include_router(traces_router)

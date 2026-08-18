@@ -80,7 +80,7 @@ def test_build_context_does_not_mutate_other_state_keys(monkeypatch):
     monkeypatch.setattr(ctx_mod, "has_documents", lambda: True)
     monkeypatch.setattr(ctx_mod, "query_context", lambda q, k, score_threshold=None, with_sources=False: ("ctx", []) if with_sources else "ctx")
     state = {
-        "user_input": "hi",
+        "user_input": "what is RAG",
         "selected_text": "",
         "intent": "general",
         "history": [{"role": "user", "content": "hi"}],
@@ -105,7 +105,7 @@ def test_build_context_passes_relevance_threshold(monkeypatch):
     monkeypatch.setattr(ctx_mod, "query_context", _capture)
     monkeypatch.setattr(ctx_mod.settings, "rag_relevance_threshold", 0.45)
 
-    build_context({"user_input": "hi", "selected_text": ""})
+    build_context({"user_input": "what is RAG", "selected_text": ""})
     assert seen["threshold"] == 0.45
 
 
@@ -121,5 +121,56 @@ def test_build_context_threshold_zero_disables_gate(monkeypatch):
     monkeypatch.setattr(ctx_mod, "query_context", _capture)
     monkeypatch.setattr(ctx_mod.settings, "rag_relevance_threshold", 0.0)
 
-    build_context({"user_input": "hi", "selected_text": ""})
+    build_context({"user_input": "what is RAG", "selected_text": ""})
     assert seen["threshold"] is None
+
+def test_build_context_skips_when_rag_disabled(monkeypatch):
+    monkeypatch.setattr(ctx_mod, "has_documents", lambda: True)
+    monkeypatch.setattr(ctx_mod.settings, "rag_enabled", False)
+    captured: list[str] = []
+    monkeypatch.setattr(
+        ctx_mod,
+        "query_context",
+        lambda q, k, score_threshold=None, with_sources=False: captured.append(q) or (("", []) if with_sources else ""),
+    )
+    out = build_context({"user_input": "what is RAG", "selected_text": ""})
+    assert out["retrieved_context"] == ""
+    assert captured == []
+
+
+def test_build_context_skips_smalltalk(monkeypatch):
+    monkeypatch.setattr(ctx_mod, "has_documents", lambda: True)
+    captured: list[str] = []
+    monkeypatch.setattr(
+        ctx_mod,
+        "query_context",
+        lambda q, k, score_threshold=None, with_sources=False: captured.append(q) or (("", []) if with_sources else ""),
+    )
+    out = build_context({"user_input": "hi there", "selected_text": ""})
+    assert out["retrieved_context"] == ""
+    assert captured == []
+
+
+def test_build_context_uses_rewritten_query(monkeypatch):
+    monkeypatch.setattr(ctx_mod, "has_documents", lambda: True)
+    seen: list[str] = []
+    monkeypatch.setattr(
+        ctx_mod,
+        "query_context",
+        lambda q, k, score_threshold=None, with_sources=False: seen.append(q) or (("ctx", []) if with_sources else "ctx"),
+    )
+    build_context({"user_input": "Can you tell me about RAG?", "selected_text": ""})
+    assert seen == ["RAG"]
+
+
+def test_build_context_uses_new_relevance_setting(monkeypatch):
+    monkeypatch.setattr(ctx_mod, "has_documents", lambda: True)
+    seen: dict = {}
+    monkeypatch.setattr(
+        ctx_mod,
+        "query_context",
+        lambda q, k, score_threshold=None, with_sources=False: seen.update(threshold=score_threshold) or (("ctx", []) if with_sources else "ctx"),
+    )
+    monkeypatch.setattr(ctx_mod.settings, "rag_min_relevance_score", 0.3)
+    build_context({"user_input": "what is RAG", "selected_text": ""})
+    assert seen["threshold"] == 0.3

@@ -32,6 +32,7 @@ packages = ["src/jarvis"]
 [project.scripts]
 jarvis-ingest = "jarvis.cli.ingest:main"
 jarvis-validate-runtime = "jarvis.cli.validate_runtime:main"
+jarvis-evaluate = "jarvis.cli.evaluate:main"
 
 [dependency-groups]
 dev = [

@@ -136,3 +136,29 @@ class ApprovalRow(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     # pending | approved | denied | expired | cancelled
     status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+
+
+class FeedbackRow(Base):
+    """User feedback on an assistant reply.
+
+    Phase 6 :: Feedback quality. The UI offers a quick thumbs-up / thumbs-down
+    (plus optional comment) on each reply. The row records the exact reply
+    that was rated so ``jarvis-evaluate`` can review what the model actually
+    produced. ``score`` is one of: good / bad / unclear.
+    """
+
+    __tablename__ = "feedback"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(String(128), index=True)
+    # The user's question that produced this reply.
+    question: Mapped[str] = mapped_column(Text)
+    # The exact assistant reply that was rated.
+    answer: Mapped[str] = mapped_column(Text)
+    # good | bad | unclear
+    score: Mapped[str] = mapped_column(String(16))
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Context for review: which path/model produced the reply.
+    path_used: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    model_used: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

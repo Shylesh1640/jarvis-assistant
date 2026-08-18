@@ -13,6 +13,7 @@ from jarvis.orchestration.branches import (
     run_general_branch,
 )
 from jarvis.orchestration.context_node import build_context
+from jarvis.orchestration.planning_node import plan_task
 from jarvis.orchestration.router_node import classify_intent
 from jarvis.orchestration.state import JarvisState
 from jarvis.tools.registry import all_tools
@@ -101,6 +102,7 @@ def build_graph():
     graph = StateGraph(JarvisState)
 
     graph.add_node("classify_intent", classify_intent)
+    graph.add_node("plan_task", plan_task)
     graph.add_node("build_context", build_context)
     graph.add_node("general_llm", run_general_branch)
     graph.add_node("coding_llm", run_coding_branch)
@@ -111,7 +113,8 @@ def build_graph():
     graph.add_node("complex_branch", run_complex_branch)
 
     graph.set_entry_point("classify_intent")
-    graph.add_edge("classify_intent", "build_context")
+    graph.add_edge("classify_intent", "plan_task")
+    graph.add_edge("plan_task", "build_context")
 
     graph.add_conditional_edges(
         "build_context",

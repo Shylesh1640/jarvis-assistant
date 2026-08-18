@@ -36,6 +36,11 @@ class JarvisState(TypedDict, total=False):
     # Used to cap the tool loop (see MAX_TOOL_ITERATIONS).
     tool_call_count: int
 
+    # Phase 5 :: planning. Populated by plan_task for complex requests when
+    # settings.max_plan_steps > 0. plan_block is the rendered context section.
+    plan: list[str]
+    plan_block: str
+
     risk_level: Literal["low", "medium", "high"]
     approval_required: bool
     approved: bool

@@ -33,6 +33,8 @@ HEALTH_URL = f"{BASE_URL}/health"
 MODELS_URL = f"{BASE_URL}/models"
 DOCS_COUNT_URL = f"{BASE_URL}/documents/count"
 DOCS_UPLOAD_URL = f"{BASE_URL}/documents/upload"
+DOCS_LIST_URL = f"{BASE_URL}/documents"
+DOCS_REINDEX_URL = f"{BASE_URL}/documents/reindex"
 TASKS_URL = f"{BASE_URL}/tasks"
 RUNTIME_URL = f"{BASE_URL}/runtime"
 TRACES_URL = f"{BASE_URL}/traces/recent"
@@ -49,7 +51,7 @@ SUGGESTIONS = {
     "Search the code": "Search the workspace for 'TODO' comments.",
 }
 
-ANSWER_STYLES = ["default", "concise", "detailed", "code", "teaching", "architecture"]
+ANSWER_STYLES = ["default", "concise", "detailed", "code", "teaching", "architecture", "research"]
 
 st.set_page_config(
     page_title="Jarvis Assistant",
@@ -211,6 +213,70 @@ def upload_documents(files) -> dict | None:
         return None
 
 
+def fetch_documents() -> list[dict]:
+    try:
+        r = httpx.get(DOCS_LIST_URL, timeout=10)
+        r.raise_for_status()
+        return r.json().get("documents", [])
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def delete_document(source: str) -> bool:
+    try:
+        r = httpx.delete(f"{DOCS_LIST_URL}/{source}?confirm=1", timeout=30)
+        r.raise_for_status()
+        st.cache_data.clear()
+        return True
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Delete failed: {exc}", icon=":material/error:")
+        return False
+
+
+def reindex_documents() -> dict | None:
+    try:
+        r = httpx.post(DOCS_REINDEX_URL, json={"folder": None}, timeout=300)
+        r.raise_for_status()
+        st.cache_data.clear()
+        return r.json()
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Reindex failed: {exc}", icon=":material/error:")
+        return None
+
+
+FEEDBACK_URL = f"{BASE_URL}/feedback"
+
+
+def submit_feedback(
+    score: str,
+    *,
+    question: str,
+    answer: str,
+    comment: str | None = None,
+    model_used: str | None = None,
+) -> bool:
+    """Rate the last assistant reply. Returns True when the backend stored it."""
+    try:
+        r = httpx.post(
+            FEEDBACK_URL,
+            json={
+                "session_id": SESSION_ID,
+                "session_token": session_token(SESSION_ID),
+                "question": question,
+                "answer": answer,
+                "score": score,
+                "comment": comment,
+                "model_used": model_used,
+            },
+            timeout=15,
+        )
+        r.raise_for_status()
+        return bool(r.json().get("stored"))
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Could not store feedback: {exc}", icon=":material/error:")
+        return False
+
+
 def create_task(description: str, session_id: str) -> dict | None:
     try:
         r = httpx.post(
@@ -343,6 +409,36 @@ def _assistant_record(answer: str, data: dict) -> dict:
         "retrieved_context": data.get("retrieved_context"),
         "approval_required": bool(data.get("approval_required")),
     }
+
+
+def _render_feedback_buttons(idx: int) -> None:
+    """Thumbs up / down rating buttons for one assistant reply."""
+    msg = st.session_state.messages[idx]
+    if msg.get("_feedback_sent"):
+        st.caption(":material/check_circle: Thanks for the feedback!")
+        return
+    prev_question = ""
+    if idx > 0 and st.session_state.messages[idx - 1].get("role") == "user":
+        prev_question = st.session_state.messages[idx - 1]["content"]
+    with st.container(horizontal=True):
+        if st.button(":material/thumb_up:", key=f"fb-up-{idx}", help="Good answer"):
+            if submit_feedback(
+                "good",
+                question=prev_question,
+                answer=msg.get("content", ""),
+                model_used=msg.get("model"),
+            ):
+                st.session_state.messages[idx]["_feedback_sent"] = True
+                st.rerun()
+        if st.button(":material/thumb_down:", key=f"fb-down-{idx}", help="Bad answer"):
+            if submit_feedback(
+                "bad",
+                question=prev_question,
+                answer=msg.get("content", ""),
+                model_used=msg.get("model"),
+            ):
+                st.session_state.messages[idx]["_feedback_sent"] = True
+                st.rerun()
 
 
 def _render_assistant_meta(rec: dict, *, debug: bool) -> None:
@@ -818,6 +914,29 @@ with st.sidebar:
                     f"-> {res.get('chunks', 0)} chunk(s)."
                 )
 
+    st.subheader("Indexed documents", divider=False)
+    docs = fetch_documents()
+    if not docs:
+        st.caption("No documents indexed yet.")
+    else:
+        for d in docs:
+            cols = st.columns([5, 2, 2])
+            cols[0].caption(f"`{d.get('source', '')}`")
+            cols[1].caption(f"{d.get('chunk_count', 0)} chunk(s)")
+            if cols[2].button(
+                "Delete", key=f"del-{d.get('source')}", icon=":material/delete:"
+            ):
+                if delete_document(d.get("source", "")):
+                    st.success(f"Deleted {d.get('source', '')}")
+    with st.expander("Manage index", icon=":material/cleaning_services:"):
+        if st.button("Reindex folder", icon=":material/refresh:"):
+            res = reindex_documents()
+            if res:
+                st.success(
+                    f"Reindexed {res.get('files', 0)} file(s) "
+                    f"-> {res.get('chunks', 0)} chunk(s)."
+                )
+
     st.subheader("Recent traces", divider=False)
     with st.expander("Trace debug panel", icon=":material/query_stats:"):
         trace_clicked = st.button(
@@ -945,6 +1064,8 @@ for idx, msg in enumerate(st.session_state.messages):
         st.markdown(msg["content"])
         if msg["role"] == "assistant" and msg.get("path"):
             _render_assistant_meta(msg, debug=tg["debug"])
+            if not msg.get("approval_required"):
+                _render_feedback_buttons(idx)
 
 # Retry button: re-send the last user message (drops the last assistant reply).
 if (

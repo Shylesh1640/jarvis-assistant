@@ -22,9 +22,10 @@ from __future__ import annotations
 import logging
 import secrets
 import threading
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from datetime import datetime, timedelta, timezone
 
+from jarvis.config.settings import settings
 from jarvis.guardrails.output_guard import redact_output
 from jarvis.observability.trace import finish_trace, new_trace, trace_event
 from jarvis.orchestration.graph import jarvis_graph
@@ -143,6 +144,45 @@ def deny_task(task_id: str) -> dict:
     return _row_to_status(repos.tasks.get(task_id))
 
 
+class TaskTimeoutError(RuntimeError):
+    """Raised when a background task exceeds ``max_task_duration_seconds``."""
+
+
+def _invoke_with_timeout(state: dict, thread_id: str) -> dict:
+    """Invoke the graph, aborting if it exceeds the configured duration cap.
+
+    ``settings.max_task_duration_seconds`` <= 0 means no cap (legacy). When
+    a cap is set the invocation runs on a dedicated worker and waits with a
+    timeout; on timeout the worker thread is detached (it cannot be force
+    killed) but the task is marked failed immediately with a clear error.
+    """
+    max_seconds = max(0, settings.max_task_duration_seconds)
+    if max_seconds <= 0:
+        return jarvis_graph.invoke(
+            state,
+            config={"configurable": {"thread_id": thread_id}},
+        )
+
+    one_shot = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jarvis-task-timed")
+    try:
+        fut = one_shot.submit(
+            jarvis_graph.invoke,
+            state,
+            {"configurable": {"thread_id": thread_id}},
+        )
+        try:
+            return fut.result(timeout=max_seconds)
+        except TimeoutError as exc:
+            logger.warning(
+                "Task exceeded duration cap (%ds) — marking failed", max_seconds
+            )
+            raise TaskTimeoutError(
+                f"Task exceeded the {max_seconds}s duration limit."
+            ) from exc
+    finally:
+        one_shot.shutdown(wait=False, cancel_futures=True)
+
+
 def _run(task_id: str, session_id: str, description: str, state: dict) -> None:
     trace = new_trace(session_id=session_id)
     try:
@@ -156,9 +196,8 @@ def _run(task_id: str, session_id: str, description: str, state: dict) -> None:
             finish_trace(trace)
             return
 
-        result = jarvis_graph.invoke(
-            state,
-            config={"configurable": {"thread_id": f"jarvis-task:{task_id}"}},
+        result = _invoke_with_timeout(
+            state, thread_id=f"jarvis-task:{task_id}"
         )
 
         if result.get("approval_required"):

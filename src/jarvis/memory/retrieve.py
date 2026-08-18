@@ -7,8 +7,12 @@ Hybrid retrieval:
   similarity. The final order is a convex combination of the two scores.
 
 Reranking happens entirely in-process (no external reranker model) so it
-adds zero latency and zero extra deps. The weight can be tuned via
-``settings.rerank_keyword_weight`` (0 = pure vector, 1 = pure keyword).
+adds zero latency and zero extra deps. The hybrid weights come from
+``settings.effective_vector_weight`` / ``settings.effective_keyword_weight``
+(Phase 5 two-weight mode) with a fallback to the legacy single knob
+``rerank_keyword_weight`` so existing configs are untouched. When
+``settings.rag_rerank_enabled`` is False the keyword layer is skipped and
+ranking is pure vector similarity.
 """
 from __future__ import annotations
 
@@ -92,11 +96,30 @@ def query_context(
     sources: list[dict[str, str]] = []
     reranked = _rerank(query, documents, distances, metadatas, score_threshold)
 
-    for doc, meta in reranked[:k]:
+    # Per-source cap: keep at most `settings.retrieval_per_source_limit`
+    # chunks per distinct source so one large document can't crowd out the
+    # rest (0 = unlimited, legacy behaviour).
+    per_source = max(0, int(getattr(settings, "retrieval_per_source_limit", 0)))
+    seen_sources: Counter[str] = Counter()
+    # Dedup by (source, chunk_id) so a chunk surfaced twice (e.g. via the
+    # overlap splitter) is only injected once.
+    seen_chunks: set[tuple[str, str]] = set()
+
+    for doc, meta in reranked:
         src = (meta or {}).get("source") or "Doc"
         chunk_id = (meta or {}).get("chunk_id") or ""
+        if per_source and seen_sources[src] >= per_source:
+            continue
+        key = (src, chunk_id)
+        if chunk_id and key in seen_chunks:
+            continue
+        seen_sources[src] += 1
+        if chunk_id:
+            seen_chunks.add(key)
+
         page = (meta or {}).get("page")
         section = (meta or {}).get("section")
+        score = (meta or {}).get("score")
         extra = ""
         if page:
             extra += f" (p.{page})"
@@ -104,7 +127,17 @@ def query_context(
             extra += f" [{section}]"
         tag = f"[{src}{extra}]" if extra else f"[{src}]"
         gathered.append(f"{tag} {doc}")
-        sources.append({"source": src, "chunk_id": chunk_id, "doc": doc})
+        hit = {"source": src, "chunk_id": chunk_id, "doc": doc}
+        if page is not None:
+            hit["page"] = page
+        if section:
+            hit["section"] = section
+        if score is not None:
+            hit["score"] = score
+        sources.append(hit)
+
+        if len(gathered) >= k:
+            break
 
     if not gathered:
         return ("", []) if with_sources else ""
@@ -180,8 +213,10 @@ def _rerank(
 
     Vector "score" = 1 - distance (cosine → similarity). Keyword score is the
     BM25 value. We min-max-normalize each score to [0,1] and combine via
-    ``settings.rerank_keyword_weight``. Lower-weight = more vector, more
-    original semantic similarity wins.
+    ``settings.effective_vector_weight`` / ``settings.effective_keyword_weight``
+    (Phase 5 two-weight mode). When ``settings.rag_rerank_enabled`` is False
+    the keyword layer is skipped entirely (pure vector ranking), and the
+    legacy ``rerank_keyword_weight`` knob keeps working for existing configs.
     """
     if not documents:
         return []
@@ -194,18 +229,25 @@ def _rerank(
     else:
         v_scores = [1.0] * len(documents)
 
-    kw_scores = _bm25_scores(query, documents)
-    if kw_scores:
-        max_kw = max(kw_scores) if max(kw_scores) > 0 else 1.0
-        kw_scores = [s / max_kw for s in kw_scores]
+    rerank_enabled = bool(getattr(settings, "rag_rerank_enabled", True))
+    if rerank_enabled:
+        kw_scores = _bm25_scores(query, documents)
+        if kw_scores:
+            max_kw = max(kw_scores) if max(kw_scores) > 0 else 1.0
+            kw_scores = [s / max_kw for s in kw_scores]
+        else:
+            kw_scores = [0.0] * len(documents)
+        v_w = float(getattr(settings, "effective_vector_weight", 0.75))
+        kw_w = float(getattr(settings, "effective_keyword_weight", 0.25))
+        total_w = (v_w + kw_w) or 1.0
+        v_w, kw_w = v_w / total_w, kw_w / total_w
     else:
         kw_scores = [0.0] * len(documents)
+        v_w, kw_w = 1.0, 0.0
 
-    kw_w = float(getattr(settings, "rerank_keyword_weight", 0.25))
-    kw_w = max(0.0, min(1.0, kw_w))
     out: list[tuple[str, dict, float]] = []
     for i, doc in enumerate(documents):
-        combined = (1 - kw_w) * v_scores[i] + kw_w * kw_scores[i]
+        combined = v_w * v_scores[i] + kw_w * kw_scores[i]
         if score_threshold is not None and distances[i] > score_threshold:
             continue
         out.append((doc, metadatas[i] if i < len(metadatas) else {}, combined))

@@ -28,6 +28,13 @@ API endpoints: `GET /health`, `GET /models`, `GET /documents/count`,
 («Approve / Deny») are submitted by re-posting the pending message to
 `POST /chat` with the `approved` field set.
 
+Phase 5+ management endpoints: `GET/DELETE /documents` (list / delete with
+`?confirm=1`, plus `POST /documents/reindex`), `GET/DELETE /memory` and
+`DELETE /memory/{id}` (conversation memory controls, destructive ops require
+`confirm=1`), `POST/GET/DELETE /feedback` (rate replies; `jarvis-evaluate`
+summarises them), and `GET /cost` (estimated cloud spend vs
+`CLOUD_DAILY_BUDGET_USD`).
+
 ## Run frontend
 
 ```bash
@@ -43,7 +50,7 @@ expandable citation / debug sections, and a "Copy answer" popover. After an
 assistant reply you can paste a snippet from it, then ask a follow-up question
 framed around that selection, or hit "Retry last message". The toolbar
 exposes "Show reasoning", an answer style (default / concise / detailed /
-code / teaching / architecture), "Run as background task", and "Show debug
+code / teaching / architecture / research), "Run as background task", and "Show debug
 info" toggles. Tool actions flagged medium/high risk surface an inline
 Approve / Deny card before execution. Long-running questions can be
 dispatched as background tasks (`Background` toggle), which the UI submits
@@ -432,6 +439,15 @@ All settings live in `src/jarvis/config/settings.py` and are loaded from
 | `RAG_CONTEXT_TOKEN_CAP` | `2048` | Max tokens (word proxy) for retrieved RAG context block |
 | `SELECTED_TEXT_TOKEN_CAP` | `1024` | Max tokens for highlighted selected-text snippet |
 | `RAG_RELEVANCE_THRESHOLD` | `0.5` | Cosine-distance gate: only on-topic RAG chunks are auto-injected |
+| `RAG_ENABLED` | `true` | Master switch for the whole RAG pipeline |
+| `RAG_MIN_RELEVANCE_SCORE` | `0.5` | Similarity-score gate; takes precedence over the legacy distance threshold when set |
+| `RAG_VECTOR_WEIGHT` / `RAG_KEYWORD_WEIGHT` | _empty_ | Phase 5 hybrid-rerank weights; fall back to `RERANK_KEYWORD_WEIGHT` |
+| `RAG_RERANK_ENABLED` | `true` | Set `false` to disable keyword (BM25) reranking |
+| `RETRIEVAL_PER_SOURCE_LIMIT` | `0` | Max chunks pulled from one source per query (`0` = unlimited) |
+| `MAX_PLAN_STEPS` | `8` | Cap on the complex-branch planning node (`0` = no planning) |
+| `MAX_TASK_DURATION_SECONDS` | `0` | Hard wall-clock cap for a background task (`0` = unlimited) |
+| `CLOUD_MAX_PROMPT_TOKENS` | `0` | Refuse cloud calls whose prompt exceeds this estimate (`0` = unlimited) |
+| `CLOUD_DAILY_BUDGET_USD` | `0` | Rough daily cloud-spend budget; cloud falls back to local once reached |
 | `GPU_OPTIMIZATION_ENABLED` | `true` | Master switch for request-level Ollama runtime options |
 | `OLLAMA_NUM_GPU` | `-1` | Offload ALL layers to GPU (100% GPU, no system-RAM spill) |
 | `OLLAMA_CONTEXT_LENGTH` | `8192` | `num_ctx` sent per request |
@@ -469,30 +485,34 @@ All settings live in `src/jarvis/config/settings.py` and are loaded from
 src/jarvis/
 ├── api/                # FastAPI app, routes/, schemas/, errors.py
 │   ├── main.py        # app + lifespan + /health + /models + /runtime
-│   └── routes/        # chat.py, documents.py, tasks.py, runtime.py, sessions.py, traces.py
+│   └── routes/        # chat.py, documents.py, tasks.py, runtime.py, sessions.py,
+│                      #   traces.py, memory.py, feedback.py, cost.py
 ├── security/          # session_auth.py (tokens), ratelimit.py
 ├── observability/     # trace.py (trace ids + bounded registry)
 ├── orchestration/     # LangGraph state, router, branches, graph, approval gate
 │   ├── graph.py       # compiled graph (InMemorySaver checkpointer) wiring nodes
 │   ├── state.py       # JarvisState TypedDict
 │   ├── router_node.py # intent classification (general/coding/complex)
+│   ├── planning_node.py # Phase 5 plan generation for complex requests (capped)
 │   ├── branches.py    # run_general/coding/complex branch nodes (typed errors)
 │   ├── context_node.py, context_window.py  # RAG + sliding-window context + caps
 │   ├── model_selector.py # picks model per intent × complexity
 │   └── approval_node.py # check_risk + approval_gate + TTL (human-in-the-loop)
-├── models/            # ollama_client.py, openrouter_client.py, runtime_diagnostics.py
+├── models/            # ollama_client.py, openrouter_client.py, cost_guard.py, runtime_diagnostics.py
 ├── tools/             # general + coding (write/edit/shell/run_tests/git_diff/list_directory) + registry.py
 ├── persistence/       # SQLAlchemy engine, models, repos (Postgres SQLite)
-├── memory/            # ChromaDB store.py (multi-format ingest) + retrieve.py (hybrid) + summaries.py
+├── memory/            # ChromaDB store.py (multi-format ingest) + retrieve.py (hybrid)
+│                      #   + summaries.py + memory_store.py + document_manager.py + query_quality.py
 ├── guardrails/        # input_guard, output_guard (PII + secret tokens), risk classification
-├── cli/               # ingest.py, validate_runtime.py (`jarvis-validate-runtime`)
+├── cli/               # ingest.py, validate_runtime.py, evaluate.py
+│                      #   (jarvis-ingest / jarvis-validate-runtime / jarvis-evaluate)
 └── config/            # settings loaded from .env
 ```
 
 ## Architecture
 
 ```
-classify_intent → build_context → route
+classify_intent → plan_task → build_context → route
  ├── general  → general_llm → check_risk ─┬─ approval_gate → END
  │                                          ├─ execute_tools → record_tools → branch (loop)
  │                                          └─ END
@@ -502,6 +522,12 @@ classify_intent → build_context → route
  └── complex  → complex_branch → END
                  └─ on failure, fall back to general branch
 ```
+
+- **Planning** (`planning_node.py`): when a request routes to `complex` and
+  `MAX_PLAN_STEPS > 0`, a small local model produces a short ordered plan
+  that is injected into the context window before the complex branch runs.
+  The plan is capped at `MAX_PLAN_STEPS` and any failure degrades to no
+  plan (the request still succeeds).
 
 - **Routing** is conditional on `intent` (`general` / `coding` / `complex`).
   `classify_intent` is hybrid: rules (word-count length + keyword boosts) run
@@ -712,6 +738,34 @@ key *presence* only — never values), `jarvis-validate-runtime --mode
 local|docker`, `env.local/docker.example` profiles, Streamlit runtime-mode
 panel, and safe Docker/WSL resource guidance — all covered by unit tests
 that run without Docker, WSL, GPU, or Ollama installed
+✅ **Phase 5 — RAG quality** — query rewriting + small-talk detection
+(skips wasted embedding calls), hybrid rerank weights
+(`RAG_VECTOR_WEIGHT` / `RAG_KEYWORD_WEIGHT`, backward-compatible with
+`RERANK_KEYWORD_WEIGHT`), relevance gate via `RAG_MIN_RELEVANCE_SCORE`,
+per-source retrieval caps, source dedup + page/section enrichment — all
+fail-open and covered by `tests/test_rag_quality.py`
+✅ **Phase 5 — conversation memory** — deterministic single-chunk summary
+mirrors into Chroma (`kind=memory`), secret redaction before summarising,
+evicted-window-turn summarization (`maybe_summarize_evicted`), memory
+controls (`GET/DELETE /memory`, `/memory/export`, `confirm=1` required on
+destructive ops), and memory-context injection into build_context —
+covered by `tests/test_memory_controls.py`
+✅ **Phase 5 — document management** — `GET /documents`, `GET/DELETE
+/documents/{source}`, `DELETE /documents`, `POST /documents/reindex` (all
+with `confirm=1` on destructive ops) + a Streamlit "Indexed documents"
+panel — covered by `tests/test_document_manager.py`
+✅ **Phase 5 — planning** — `planning_node` generates a capped step plan
+(`MAX_PLAN_STEPS`) for complex requests and injects it into the context
+window; background tasks honour a hard duration cap
+(`MAX_TASK_DURATION_SECONDS`) — covered by `tests/test_planning_and_duration.py`
+✅ **Phase 6 — feedback** — `POST/GET/DELETE /feedback` (thumbs up/down +
+comment) with durable storage, thumbs buttons in the Streamlit chat, and a
+`jarvis-evaluate` CLI that summarises ratings — covered by
+`tests/test_feedback.py`
+✅ **Phase 7 — cost guardrails** — `CostGuard` refuses oversized prompts
+(`CLOUD_MAX_PROMPT_TOKENS`) and pauses cloud calls past a daily budget
+(`CLOUD_DAILY_BUDGET_USD`), with `GET /cost` diagnostics and automatic
+fallback to local models — covered by `tests/test_cost_guardrails.py`
 
 ## Docs
 

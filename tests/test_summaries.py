@@ -46,16 +46,21 @@ def test_summarizes_when_threshold_crossed(fresh_db, monkeypatch):
     monkeypatch.setattr(
         s_mod, "_summarize_text", lambda msgs: "summary bullets..."
     )
-    ingest_calls = []
+    # store_summary mirrors the summary into Chroma; stub the collection so
+    # the test doesn't touch a real vector store.
+    from unittest.mock import MagicMock
+
     monkeypatch.setattr(
-        s_mod, "ingest_documents",
-        lambda docs: ingest_calls.extend([d.metadata for d in docs]) or ["id1"],
+        "jarvis.memory.memory_store.get_collection", lambda: MagicMock()
+    )
+    monkeypatch.setattr(
+        "jarvis.memory.store.get_embedding_function",
+        lambda: MagicMock(embed_documents=lambda texts: [[0.1]]),
     )
     result = s_mod.maybe_summarize("s1")
     assert result == "summary bullets..."
     assert repos.summaries.count_for_session("s1") == 1
-    assert len(ingest_calls) == 1
-    assert ingest_calls[0]["source"] == "session:s1"
+    assert repos.summaries.latest_for_session("s1").summary == "summary bullets..."
 
 
 def test_dedupes_when_already_summarized(fresh_db, monkeypatch):

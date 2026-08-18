@@ -137,3 +137,102 @@ def test_ingest_folder_missing_returns_404(client):
         "/documents/ingest-folder", params={"folder": "/no/such/place"}
     )
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 :: document management
+# ---------------------------------------------------------------------------
+
+
+def test_documents_list_groups_by_source(client, monkeypatch):
+    import jarvis.api.routes.documents as docs_mod
+
+    fake = [
+        {"source": "b.md", "chunk_count": 3, "timestamp": "t2"},
+        {"source": "a.txt", "chunk_count": 1, "timestamp": "t1"},
+    ]
+    monkeypatch.setattr(docs_mod, "list_documents", lambda: fake)
+    r = client.get("/documents")
+    assert r.status_code == 200
+    assert r.json()["documents"] == fake
+
+
+def test_documents_get_returns_chunks(client, monkeypatch):
+    import jarvis.api.routes.documents as docs_mod
+
+    fake = {"source": "a.txt", "chunk_count": 1, "chunks": [{"chunk_id": "c1", "text": "hi"}]}
+    monkeypatch.setattr(docs_mod, "get_document", lambda src: fake)
+    r = client.get("/documents/a.txt")
+    assert r.status_code == 200
+    assert r.json()["chunks"][0]["chunk_id"] == "c1"
+
+
+def test_documents_get_missing_404(client, monkeypatch):
+    import jarvis.api.routes.documents as docs_mod
+
+    monkeypatch.setattr(docs_mod, "get_document", lambda src: None)
+    r = client.get("/documents/nope.txt")
+    assert r.status_code == 404
+
+
+def test_documents_delete_requires_confirmation(client, monkeypatch):
+    import jarvis.api.routes.documents as docs_mod
+
+    monkeypatch.setattr(docs_mod, "delete_document", lambda src: 2)
+    r = client.delete("/documents/a.txt")
+    assert r.status_code == 400
+    assert r.json()["error"] == "confirmation_required"
+
+
+def test_documents_delete_with_confirmation(client, monkeypatch):
+    import jarvis.api.routes.documents as docs_mod
+
+    monkeypatch.setattr(docs_mod, "delete_document", lambda src: 2)
+    r = client.delete("/documents/a.txt?confirm=1")
+    assert r.status_code == 200
+    assert r.json() == {"deleted": "a.txt", "chunks": 2}
+
+
+def test_documents_delete_missing_404(client, monkeypatch):
+    import jarvis.api.routes.documents as docs_mod
+
+    monkeypatch.setattr(docs_mod, "delete_document", lambda src: 0)
+    r = client.delete("/documents/nope.txt?confirm=1")
+    assert r.status_code == 404
+
+
+def test_documents_clear_requires_confirmation(client, monkeypatch):
+    import jarvis.api.routes.documents as docs_mod
+
+    monkeypatch.setattr(docs_mod, "clear_documents", lambda: 5)
+    r = client.delete("/documents")
+    assert r.status_code == 400
+
+
+def test_documents_clear_with_confirmation(client, monkeypatch):
+    import jarvis.api.routes.documents as docs_mod
+
+    monkeypatch.setattr(docs_mod, "clear_documents", lambda: 5)
+    r = client.delete("/documents?confirm=1")
+    assert r.status_code == 200
+    assert r.json() == {"cleared": 5}
+
+
+def test_documents_reindex(client, monkeypatch, tmp_path):
+    import jarvis.api.routes.documents as docs_mod
+
+    target = tmp_path / "docs"
+    target.mkdir()
+    monkeypatch.setattr(
+        docs_mod,
+        "reindex_documents",
+        lambda folder: {"files": 2, "chunks": 4, "skipped": 0},
+    )
+    r = client.post("/documents/reindex", params={"folder": str(target)})
+    assert r.status_code == 200
+    assert r.json()["chunks"] == 4
+
+
+def test_documents_reindex_missing_folder_404(client):
+    r = client.post("/documents/reindex", params={"folder": "/no/such/place"})
+    assert r.status_code == 404

@@ -72,12 +72,23 @@ Response `200`:
   "sources": [{"source": "docs/x.md", "chunk_id": "…"}],
   "retrieved_context": "…",
   "fallback_used": false,
-  "warning": null
+  "warning": null,
+  "elapsed_seconds": 3.42
 }
 ```
 
+`elapsed_seconds` is the wall-clock time spent producing this reply
+(excluding any time the request waited for approval).
+
 Note: the response does **not** carry a `trace_id` field; trace ids are
 recorded in logs and surfaced via `GET /traces/recent`.
+
+#### Answer styles
+
+`answer_style` accepts: `concise`, `detailed`, `code`, `teaching`,
+`architecture`, `research`. `research` structures the reply as a short
+research brief (Summary / Key Findings / Sources) grounded in retrieved
+context when available.
 
 #### Approval flow
 
@@ -202,6 +213,120 @@ Body `{ "folder": "./data/docs" }` (optional — defaults to `DOCS_FOLDER`).
 Wraps the CLI ingest over HTTP. Errors:
 `400 invalid_input`/`folder not found/readable`.
 
+### `GET /documents`
+
+List distinct indexed sources with chunk counts:
+
+```json
+{ "documents": [ { "source": "notes.md", "filename": "notes.md", "chunk_count": 3, "timestamp": "…" } ] }
+```
+
+### `GET /documents/{source}`
+
+One source's chunks for inspection:
+
+```json
+{ "source": "notes.md", "chunk_count": 3, "chunks": [ { "chunk_id": "…", "text": "…", "page": 1, "section": "file", "timestamp": "…" } ] }
+```
+
+Errors: `404 document_not_found`.
+
+### `DELETE /documents/{source}?confirm=1`
+
+Remove one source. The `confirm=1` flag is **required**; without it you get
+`400 confirmation_required`. Errors: `404 document_not_found`.
+
+### `DELETE /documents?confirm=1`
+
+Remove the whole document corpus (memory chunks are unaffected).
+
+### `POST /documents/reindex`
+
+Rebuild the index from the configured (or explicit) folder:
+
+```json
+{ "folder": "./data/docs" }
+```
+
+Returns `{ "files": 2, "chunks": 4, "skipped": 0 }`. Errors:
+`404` when the folder is missing.
+
+## Conversation memory
+
+### `GET /memory`
+
+List stored summaries for a session:
+
+```json
+{ "session_id": "abc123", "items": [ { "id": 1, "session_id": "abc123", "summary": "…", "from_message_id": 1, "to_message_id": 20, "created_at": "…" } ] }
+```
+
+### `GET /memory/{id}`
+
+One summary. Errors: `404 memory_not_found`.
+
+### `GET /memory/export`
+
+Render the session's memory as Markdown for download:
+
+```json
+{ "session_id": "abc123", "markdown": "# Conversation memory\n\n## Summary #1 …" }
+```
+
+### `DELETE /memory/{id}?confirm=1`
+
+Delete one summary. `confirm=1` is **required** (`400 confirmation_required`).
+Errors: `404 memory_not_found`.
+
+### `DELETE /memory?confirm=1`
+
+Clear all memory for a session. Returns `{ "cleared": 2 }`.
+
+## Feedback
+
+### `POST /feedback`
+
+Rate an assistant reply. Body:
+
+```json
+{ "session_id": "abc123", "session_token": "optional", "question": "what is RAG?", "answer": "Retrieval-augmented…", "score": "good", "comment": "optional", "model_used": "qwen3:8b" }
+```
+
+`score` is one of `good | bad | unclear`. Errors:
+`422 invalid_score`, `400 missing_answer`. Returns `{ "stored": true, "id": 1 }`
+(or `stored: false` when the DB is unavailable).
+
+### `GET /feedback?session_id=…`
+
+Recent feedback (all sessions by default):
+
+```json
+{ "items": [ { "id": 1, "session_id": "abc123", "question": "…", "answer": "…", "score": "good", "comment": null, "path_used": "general", "model_used": "qwen3:8b", "created_at": "…" } ], "count": 1 }
+```
+
+### `DELETE /feedback/{id}?confirm=1`
+
+Delete one entry (`400 confirmation_required` without the flag;
+`404 feedback_not_found` for a missing id).
+
+### `DELETE /feedback?confirm=1`
+
+Clear all feedback. Returns `{ "cleared": 3 }`.
+
+## Cloud cost guardrails
+
+### `GET /cost`
+
+Estimated cloud-spend snapshot (prompt-only estimate, not an invoice):
+
+```json
+{ "day": "2026-08-18", "spent_today_usd": 0.0042, "daily_budget_usd": 1.0, "max_prompt_tokens": 0, "calls_today": 1, "recent_calls": [ { "day": "2026-08-18", "model": "openai/gpt-5.5", "cost_usd": 0.0042 } ] }
+```
+
+The guard refuses cloud calls when `CLOUD_MAX_PROMPT_TOKENS` or
+`CLOUD_DAILY_BUDGET_USD` is exceeded; the complex branch falls back to
+local models.
+
 ## Observability
 
 ### `GET /traces/recent?limit=50`
@@ -237,11 +362,16 @@ the HTTP `Retry-After` header.
 |---|---|---|
 | 400 | `invalid_input` | Guardrails rejected the prompt |
 | 400 | `no_pending_approval` | `approved: true` but nothing pending |
+| 400 | `confirmation_required` | Destructive op without `?confirm=1` |
 | 403 | `invalid_session_token` | Missing/invalid session token |
 | 404 | `task_not_found` | Unknown task id |
 | 404 | `session_not_found` | Session API missing row |
+| 404 | `document_not_found` | No such indexed document/source |
+| 404 | `memory_not_found` | Unknown summary id |
+| 404 | `feedback_not_found` | Unknown feedback id |
 | 409 | `task_not_awaiting_approval` | approve/deny on a non-waiting task |
 | 410 | `approval_expired` | Approval TTL elapsed; re-ask to restart |
+| 422 | `invalid_score` | Feedback score not good/bad/unclear |
 | 429 | `rate_limited` | Too many requests; retry after `Retry-After` |
 | 500 | `internal_error` | Unexpected server error |
 | 502 | `model_not_found` | Model missing on Ollama (`model_request_failed` for untyped model failures) |

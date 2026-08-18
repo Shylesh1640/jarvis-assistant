@@ -25,6 +25,13 @@ def test_code_style_suffix():
     assert "code" in s.lower()
 
 
+def test_research_style_suffix():
+    s = style_reasoning_suffixes({"answer_style": "research"})
+    assert "research" in s.lower()
+    assert "Key Findings" in s
+    assert "Sources" in s
+
+
 def test_concise_and_detailed():
     assert "concise" in style_reasoning_suffixes({"answer_style": "concise"})
     assert "detailed" in style_reasoning_suffixes({"answer_style": "detailed"})

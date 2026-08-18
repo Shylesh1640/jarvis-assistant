@@ -43,6 +43,9 @@ class ChatResponse(BaseModel):
     retrieved_context: str | None = None
     fallback_used: bool = False
     warning: str | None = None
+    # Performance metadata: wall-clock time spent producing this reply
+    # (excluding any time the request spent waiting for approval), in seconds.
+    elapsed_seconds: float | None = None
 
 
 class TaskCreateRequest(BaseModel):

@@ -47,6 +47,17 @@ def _default_invoke(state):
     return state
 
 
+def test_response_carries_elapsed_seconds(client):
+    r = client.post(
+        "/chat",
+        json={"session_id": "timing", "message": "how fast?"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert isinstance(body["elapsed_seconds"], float)
+    assert body["elapsed_seconds"] >= 0
+
+
 # ---------------------------------------------------------------------------
 # /health and /documents/count
 # ---------------------------------------------------------------------------

@@ -6,6 +6,14 @@
   ``jarvis ingest``).
 * ``POST /documents/ingest-folder`` — trigger a folder scan + ingest for
   clients that already have files on disk (e.g. mounted volumes).
+
+Phase 5 :: document management:
+* ``GET /documents`` — list distinct sources with chunk counts.
+* ``GET /documents/{source}`` — chunks for one source.
+* ``DELETE /documents/{source}?confirm=1`` — remove one source (destructive,
+  so a confirmation flag is required).
+* ``DELETE /documents?confirm=1`` — remove the whole document corpus.
+* ``POST /documents/reindex`` — rebuild the index from the configured folder.
 """
 from __future__ import annotations
 
@@ -16,7 +24,15 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, UploadFile
 from langchain_core.documents import Document
 
+from jarvis.api.errors import APIError
 from jarvis.config.settings import settings
+from jarvis.memory.document_manager import (
+    clear_documents,
+    delete_document,
+    get_document,
+    list_documents,
+    reindex_documents,
+)
 from jarvis.memory.store import get_collection, ingest_documents, ingest_file
 
 logger = logging.getLogger("jarvis.api.documents")
@@ -147,3 +163,59 @@ def ingest_folder(folder: str | None = None) -> dict:
 
     logger.info("Ingested folder %s -> %d file(s), %d chunk(s)", target, file_count, len(all_ids))
     return {"files": file_count, "chunks": len(all_ids), "ids": all_ids}
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 :: document management
+# ---------------------------------------------------------------------------
+
+
+@router.get("")
+def documents_list() -> dict:
+    """List distinct sources in the store with chunk counts."""
+    return {"documents": list_documents()}
+
+
+@router.get("/{source}")
+def documents_get(source: str) -> dict:
+    """Return one source's chunks for inspection/debug."""
+    doc = get_document(source)
+    if doc is None:
+        raise APIError(404, "document_not_found", f"No document indexed as '{source}'.")
+    return doc
+
+
+@router.delete("/{source}")
+def documents_delete(source: str, confirm: bool = False) -> dict:
+    """Remove one source from the store (requires ?confirm=1)."""
+    if not confirm:
+        raise APIError(
+            400,
+            "confirmation_required",
+            "Pass ?confirm=1 to delete this document.",
+        )
+    removed = delete_document(source)
+    if removed == 0:
+        raise APIError(404, "document_not_found", f"No document indexed as '{source}'.")
+    return {"deleted": source, "chunks": removed}
+
+
+@router.delete("")
+def documents_clear(confirm: bool = False) -> dict:
+    """Remove the whole document corpus (requires ?confirm=1)."""
+    if not confirm:
+        raise APIError(
+            400,
+            "confirmation_required",
+            "Pass ?confirm=1 to clear all documents.",
+        )
+    return {"cleared": clear_documents()}
+
+
+@router.post("/reindex")
+def documents_reindex(folder: str | None = None) -> dict:
+    """Rebuild the index from the configured (or explicit) folder."""
+    try:
+        return reindex_documents(folder)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc

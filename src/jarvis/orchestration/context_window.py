@@ -36,6 +36,7 @@ import logging
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 from jarvis.config.settings import Settings, settings
+from jarvis.orchestration.planning_node import format_plan_block
 from jarvis.orchestration.state import JarvisState
 
 logger = logging.getLogger(__name__)
@@ -186,6 +187,14 @@ _STYLE_SUFFIXES = {
         " components, their responsibilities, data flows, trade-offs, and"
         " failure modes. Prefer diagrams (ASCII) where helpful."
     ),
+    "research": (
+        " Answer in research mode: structure the reply like a short research"
+        " brief. Include: a one-paragraph Summary, Key Findings (bullet list"
+        " grounded in the retrieved context), and Sources (cite the retrieved"
+        " context explicitly where used). If retrieved context is absent or"
+        " unrelated, say clearly that you are answering from general"
+        " knowledge and do not fabricate citations."
+    ),
 }
 
 
@@ -272,6 +281,10 @@ def build_final_messages(state: JarvisState, s: Settings = settings) -> list[Bas
     """
     messages: list[BaseMessage] = [SystemMessage(content=SYSTEM_PROMPT + style_reasoning_suffixes(state))]
 
+    plan_block = format_plan_block(state.get("plan_block", ""))
+    if plan_block:
+        messages.append(SystemMessage(content=plan_block))
+
     retrieved = format_retrieved_context(state.get("retrieved_context", ""))
     if retrieved:
         messages.append(SystemMessage(content=retrieved))
@@ -300,6 +313,10 @@ def build_final_chat_dicts(state: JarvisState, s: Settings = settings) -> list[d
     items: list[dict[str, str]] = [
         {"role": "system", "content": SYSTEM_PROMPT + style_reasoning_suffixes(state)}
     ]
+
+    plan_block = format_plan_block(state.get("plan_block", ""))
+    if plan_block:
+        items.append({"role": "system", "content": plan_block})
 
     retrieved = format_retrieved_context(state.get("retrieved_context", ""))
     if retrieved:

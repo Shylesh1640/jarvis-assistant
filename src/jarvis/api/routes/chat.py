@@ -15,6 +15,7 @@ History / summaries / tasks / approvals live in the persistence layer
 """
 import logging
 import threading
+import time
 
 from fastapi import APIRouter, Request
 
@@ -22,7 +23,7 @@ from jarvis.api.errors import APIError
 from jarvis.api.schemas.chat import ChatRequest, ChatResponse
 from jarvis.guardrails.input_guard import validate_input
 from jarvis.guardrails.output_guard import redact_output
-from jarvis.memory.summaries import maybe_summarize
+from jarvis.memory.summaries import maybe_summarize, maybe_summarize_evicted
 from jarvis.orchestration.approval_node import approval_is_expired
 from jarvis.orchestration.branches import (
     OllamaModelLoadError,
@@ -203,6 +204,23 @@ def _default_expiry() -> str:
     return (datetime.now(timezone.utc) + timedelta(seconds=600)).isoformat()
 
 
+def _invoke_graph(state: dict, thread_id: str) -> dict:
+    """Run the graph and stamp wall-clock timing onto the result.
+
+    ``result["elapsed_seconds"]`` measures the time to produce this reply
+    (model + tool rounds). It is exposed on ChatResponse so the UI can
+    surface latency without parsing logs.
+    """
+    started = time.perf_counter()
+    result = jarvis_graph.invoke(
+        state,
+        config={"configurable": {"thread_id": thread_id}},
+    )
+    result = dict(result)
+    result["elapsed_seconds"] = round(time.perf_counter() - started, 3)
+    return result
+
+
 @router.post("/chat", response_model=ChatResponse)
 def chat(payload: ChatRequest, request: Request) -> ChatResponse:
     logger.info(
@@ -269,9 +287,8 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
         trace_event(tr, "approval_resume")
         prev_state["approved"] = True
         try:
-            result = jarvis_graph.invoke(
-                prev_state,
-                config={"configurable": {"thread_id": _thread_id(payload.session_id)}},
+            result = _invoke_graph(
+                prev_state, _thread_id(payload.session_id)
             )
         except Exception as exc:  # noqa: BLE001
             raise _error_from_exception(exc, tr) from exc
@@ -321,10 +338,7 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
         )
 
     try:
-        result = jarvis_graph.invoke(
-            initial_state,
-            config={"configurable": {"thread_id": _thread_id(payload.session_id)}},
-        )
+        result = _invoke_graph(initial_state, _thread_id(payload.session_id))
     except Exception as exc:  # noqa: BLE001
         raise _error_from_exception(exc, tr) from exc
 
@@ -443,6 +457,10 @@ def _update_history(session_id: str, user_message: str, result: dict) -> None:
         maybe_summarize(session_id)
     except Exception as exc:  # noqa: BLE001
         logger.debug("maybe_summarize failed: %s", exc)
+    try:
+        maybe_summarize_evicted(session_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("maybe_summarize_evicted failed: %s", exc)
 
 
 def _build_response(session_id: str, result: dict) -> ChatResponse:
@@ -461,4 +479,5 @@ def _build_response(session_id: str, result: dict) -> ChatResponse:
         retrieved_context=result.get("retrieved_context", "") or None,
         fallback_used=bool(result.get("fallback_used")),
         warning=result.get("warning"),
+        elapsed_seconds=result.get("elapsed_seconds"),
     )

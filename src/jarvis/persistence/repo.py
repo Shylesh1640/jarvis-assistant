@@ -15,6 +15,7 @@ from sqlalchemy import desc, func, select
 from jarvis.persistence.engine import get_session
 from jarvis.persistence.models import (
     ApprovalRow,
+    FeedbackRow,
     MessageRow,
     SessionRow,
     SummaryRow,
@@ -220,6 +221,21 @@ class SummaryRepo:
             s.flush()
             return row.id
 
+    def get(self, summary_id: int) -> SummaryRow | None:
+        with get_session() as s:
+            return s.get(SummaryRow, summary_id)
+
+    def list_for_session(self, session_id: str, limit: int = 50) -> list[SummaryRow]:
+        with get_session() as s:
+            return list(
+                s.scalars(
+                    select(SummaryRow)
+                    .where(SummaryRow.session_id == session_id)
+                    .order_by(desc(SummaryRow.id))
+                    .limit(limit)
+                ).all()
+            )
+
     def latest_for_session(self, session_id: str) -> SummaryRow | None:
         with get_session() as s:
             return s.scalars(
@@ -236,6 +252,25 @@ class SummaryRepo:
                 .select_from(SummaryRow)
                 .where(SummaryRow.session_id == session_id)
             ) or 0
+
+    def delete(self, summary_id: int) -> bool:
+        with get_session() as s:
+            row = s.get(SummaryRow, summary_id)
+            if row is None:
+                return False
+            s.delete(row)
+            s.flush()
+            return True
+
+    def delete_all_for_session(self, session_id: str) -> int:
+        with get_session() as s:
+            rows = s.scalars(
+                select(SummaryRow).where(SummaryRow.session_id == session_id)
+            ).all()
+            for row in rows:
+                s.delete(row)
+            s.flush()
+            return len(rows)
 
 
 class ApprovalRepo:
@@ -535,12 +570,82 @@ class TaskRepo:
                 s.flush()
 
 
+class FeedbackRepo:
+    """Store user ratings of assistant replies (good / bad / unclear)."""
+
+    def add(
+        self,
+        session_id: str,
+        *,
+        question: str,
+        answer: str,
+        score: str,
+        comment: str | None = None,
+        path_used: str | None = None,
+        model_used: str | None = None,
+    ) -> int:
+        with get_session() as s:
+            row = FeedbackRow(
+                session_id=session_id,
+                question=question,
+                answer=answer,
+                score=score,
+                comment=comment,
+                path_used=path_used,
+                model_used=model_used,
+            )
+            s.add(row)
+            s.flush()
+            return row.id
+
+    def list(self, limit: int = 200) -> list[FeedbackRow]:
+        with get_session() as s:
+            return list(
+                s.scalars(
+                    select(FeedbackRow).order_by(desc(FeedbackRow.id)).limit(limit)
+                ).all()
+            )
+
+    def list_for_session(self, session_id: str, limit: int = 200) -> list[FeedbackRow]:
+        with get_session() as s:
+            return list(
+                s.scalars(
+                    select(FeedbackRow)
+                    .where(FeedbackRow.session_id == session_id)
+                    .order_by(desc(FeedbackRow.id))
+                    .limit(limit)
+                ).all()
+            )
+
+    def count(self) -> int:
+        with get_session() as s:
+            return s.scalar(select(func.count()).select_from(FeedbackRow)) or 0
+
+    def delete(self, feedback_id: int) -> bool:
+        with get_session() as s:
+            row = s.get(FeedbackRow, feedback_id)
+            if row is None:
+                return False
+            s.delete(row)
+            s.flush()
+            return True
+
+    def delete_all(self) -> int:
+        with get_session() as s:
+            rows = s.scalars(select(FeedbackRow)).all()
+            for row in rows:
+                s.delete(row)
+            s.flush()
+            return len(rows)
+
+
 class _Repos:
     sessions = SessionRepo()
     messages = MessageRepo()
     summaries = SummaryRepo()
     approvals = ApprovalRepo()
     tasks = TaskRepo()
+    feedback = FeedbackRepo()
 
 
 repos = _Repos
