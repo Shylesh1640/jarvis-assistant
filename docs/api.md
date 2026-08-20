@@ -17,6 +17,26 @@ Liveness probe plus Ollama reachability.
 { "status": "ok", "ollama_reachable": true }
 ```
 
+### `GET /ready`
+
+Readiness probe for the selected deployment profile. Returns 200 with
+`status: "ready"` (or `"degraded"` when only informational checks warn) and
+**503** when a required dependency fails. Checks: `database` (required),
+`deployment` (required), `ollama` (required for local/single_host), `cloud`
+(informational). Never exposes secrets.
+
+```json
+{
+  "status": "ready",
+  "checks": {
+    "database": { "ok": true, "detail": "database reachable", "required": true },
+    "deployment": { "ok": true, "detail": "deployment profile valid", "required": true },
+    "ollama": { "ok": true, "detail": "ollama reachable", "required": true },
+    "cloud": { "ok": true, "detail": "not configured", "required": false }
+  }
+}
+```
+
 ### `GET /models`
 
 Configured local + cloud models.

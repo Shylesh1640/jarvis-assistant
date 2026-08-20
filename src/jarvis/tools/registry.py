@@ -18,8 +18,30 @@ from jarvis.tools.coding.run_tests import run_tests
 from jarvis.tools.coding.shell import run_shell
 from jarvis.tools.coding.write_ops import edit_file, write_file
 from jarvis.tools.general.calculator import calculator
+from jarvis.tools.general.calendar import (
+    create_event,
+    delete_event,
+    list_calendars,
+    list_events,
+    update_event,
+)
+from jarvis.tools.general.connectors import list_connectors, run_connector
+from jarvis.tools.general.email import (
+    create_email_draft,
+    delete_email_draft,
+    list_email_drafts,
+    send_email_draft,
+    update_email_draft,
+)
 from jarvis.tools.general.rag_search import rag_search
 from jarvis.tools.general.search_code import search_code
+from jarvis.tools.general.todos import (
+    complete_todo,
+    create_todo,
+    delete_todo,
+    list_todos,
+    update_todo,
+)
 
 # Safe, read-only tools — execute automatically (low risk).
 GENERAL_TOOLS: list = [
@@ -29,6 +51,11 @@ GENERAL_TOOLS: list = [
     read_file,
     list_directory,
     git_diff,
+    list_todos,
+    list_calendars,
+    list_events,
+    list_email_drafts,
+    list_connectors,
 ]
 
 CODING_TOOLS: list = [
@@ -46,6 +73,18 @@ APPROVAL_GATED_TOOLS: list = [
     edit_file,
     run_shell,
     run_tests,
+    create_todo,
+    complete_todo,
+    update_todo,
+    delete_todo,
+    create_event,
+    update_event,
+    delete_event,
+    create_email_draft,
+    update_email_draft,
+    delete_email_draft,
+    send_email_draft,
+    run_connector,
 ]
 
 # Tools each branch's LLM gets to request.

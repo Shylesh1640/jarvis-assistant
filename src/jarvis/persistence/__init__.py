@@ -20,19 +20,23 @@ from jarvis.persistence.engine import (
 )
 from jarvis.persistence.models import (
     ApprovalRow,
+    EmailDraftRow,
     FeedbackRow,
     MessageRow,
     SessionRow,
     SummaryRow,
     TaskRow,
+    TodoRow,
 )
 from jarvis.persistence.repo import (
     ApprovalRepo,
+    EmailDraftRepo,
     FeedbackRepo,
     MessageRepo,
     SessionRepo,
     SummaryRepo,
     TaskRepo,
+    TodoRepo,
     repos,
 )
 
@@ -43,16 +47,20 @@ __all__ = [
     "engine_from_settings",
     "get_session",
     "ApprovalRow",
+    "EmailDraftRow",
     "FeedbackRow",
     "MessageRow",
     "SessionRow",
     "SummaryRow",
     "TaskRow",
+    "TodoRow",
     "ApprovalRepo",
+    "EmailDraftRepo",
     "FeedbackRepo",
     "MessageRepo",
     "SessionRepo",
     "SummaryRepo",
     "TaskRepo",
+    "TodoRepo",
     "repos",
 ]

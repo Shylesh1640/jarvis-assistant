@@ -205,3 +205,67 @@ class CloudUsageRow(Base):
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
     estimated_cost_usd: Mapped[float] = mapped_column(default=0.0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class TodoRow(Base):
+    """Personal to-do item (Phase 8 :: tasks & reminders).
+
+    Soft deletion: ``deleted_at`` is set instead of physically removing the
+    row, so history is preserved and the reminder worker never re-fires for a
+    deleted todo. ``status`` lifecycle: open -> in_progress -> completed |
+    cancelled (no backward transitions). ``completed_at`` is stamped only when
+    the status becomes ``completed``. ``last_reminded_at`` dedupes the
+    background reminder worker.
+    """
+
+    __tablename__ = "todos"
+
+    todo_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(128), index=True)
+    title: Mapped[str] = mapped_column(String(256))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # open | in_progress | completed | cancelled
+    status: Mapped[str] = mapped_column(String(16), default="open", index=True)
+    # low | medium | high
+    priority: Mapped[str] = mapped_column(String(8), default="medium")
+    due_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Soft-delete marker; set instead of physical deletion.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set by the reminder worker when a due-soon reminder fires (dedupe).
+    last_reminded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class EmailDraftRow(Base):
+    """An email draft (Phase 8 :: email drafts).
+
+    Fully local — drafts are created/edited/deleted with no provider
+    configured. ``status`` is ``draft`` until ``mark_sent`` flips it to
+    ``sent`` (stamping ``sent_at``). Recipients are stored as a JSON list.
+    Never store credentials here and never log full bodies.
+    """
+
+    __tablename__ = "email_drafts"
+
+    draft_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(128), index=True)
+    subject: Mapped[str] = mapped_column(String(256))
+    # JSON list of recipient addresses.
+    recipients: Mapped[list] = mapped_column(JSON, default=list)
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    from_address: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # draft | sent
+    status: Mapped[str] = mapped_column(String(16), default="draft", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

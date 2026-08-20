@@ -16,7 +16,7 @@ import sys
 from jarvis.backup import list_backups
 from jarvis.config.deployment import deployment_capability_report, validate_deployment
 from jarvis.config.runtime_capabilities import resolve_runtime_mode
-from jarvis.config.settings import settings, validate_runtime_settings
+from jarvis.config.settings import settings
 from jarvis.models.platform_diagnostics import docker_cli_available, get_docker_containers
 from jarvis.persistence.schema import LATEST_SCHEMA_VERSION, current_schema_version, validate_schema
 

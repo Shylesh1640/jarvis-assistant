@@ -16,11 +16,13 @@ from jarvis.persistence.engine import get_session
 from jarvis.persistence.models import (
     ApprovalRow,
     CloudUsageRow,
+    EmailDraftRow,
     FeedbackRow,
     MessageRow,
     SessionRow,
     SummaryRow,
     TaskRow,
+    TodoRow,
 )
 from jarvis.security.token_hasher import new_session_token, verify_token
 
@@ -885,6 +887,318 @@ class CloudUsageRepo:
             ]
 
 
+class TodoRepo:
+    """Session-scoped CRUD for the ``todos`` table (Phase 8).
+
+    All methods scope on ``session_id`` so a caller can never read or mutate
+    another session's todos. Rows are soft-deleted via ``deleted_at``; the
+    default scoping excludes soft-deleted rows.
+    """
+
+    def create(
+        self,
+        todo_id: str,
+        session_id: str,
+        *,
+        title: str,
+        description: str | None = None,
+        priority: str = "medium",
+        due_at=None,
+        source_request_id: str | None = None,
+    ) -> TodoRow:
+        with get_session() as s:
+            row = TodoRow(
+                todo_id=todo_id,
+                session_id=session_id,
+                title=title,
+                description=description,
+                status="open",
+                priority=priority,
+                due_at=due_at,
+                source_request_id=source_request_id,
+            )
+            s.add(row)
+            s.flush()
+            return row
+
+    def get(self, session_id: str, todo_id: str) -> TodoRow | None:
+        with get_session() as s:
+            return s.scalar(
+                select(TodoRow).where(
+                    TodoRow.session_id == session_id,
+                    TodoRow.todo_id == todo_id,
+                    TodoRow.deleted_at.is_(None),
+                )
+            )
+
+    def list_for_session(
+        self,
+        session_id: str,
+        *,
+        status: str | None = None,
+        priority: str | None = None,
+        due_before=None,
+        due_after=None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[TodoRow]:
+        with get_session() as s:
+            query = select(TodoRow).where(
+                TodoRow.session_id == session_id,
+                TodoRow.deleted_at.is_(None),
+            )
+            if status:
+                query = query.where(TodoRow.status == status)
+            if priority:
+                query = query.where(TodoRow.priority == priority)
+            if due_before is not None:
+                query = query.where(TodoRow.due_at <= due_before)
+            if due_after is not None:
+                query = query.where(TodoRow.due_at >= due_after)
+            query = query.order_by(TodoRow.due_at.is_(None), desc(TodoRow.created_at))
+            if offset:
+                query = query.offset(offset)
+            if limit:
+                query = query.limit(limit)
+            return list(s.scalars(query).all())
+
+    def update(
+        self,
+        session_id: str,
+        todo_id: str,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+        priority: str | None = None,
+        due_at=None,
+        status: str | None = None,
+    ) -> TodoRow | None:
+        with get_session() as s:
+            row = s.scalar(
+                select(TodoRow).where(
+                    TodoRow.session_id == session_id,
+                    TodoRow.todo_id == todo_id,
+                    TodoRow.deleted_at.is_(None),
+                )
+            )
+            if row is None:
+                return None
+            if title is not None:
+                row.title = title
+            if description is not None:
+                row.description = description
+            if priority is not None:
+                row.priority = priority
+            if due_at is not None:
+                row.due_at = due_at
+            if status is not None:
+                _apply_todo_status(row, status)
+            s.flush()
+            return row
+
+    def set_status(self, session_id: str, todo_id: str, status: str) -> TodoRow | None:
+        with get_session() as s:
+            row = s.scalar(
+                select(TodoRow).where(
+                    TodoRow.session_id == session_id,
+                    TodoRow.todo_id == todo_id,
+                    TodoRow.deleted_at.is_(None),
+                )
+            )
+            if row is None:
+                return None
+            _apply_todo_status(row, status)
+            s.flush()
+            return row
+
+    def soft_delete(self, session_id: str, todo_id: str) -> bool:
+        """Soft-delete a todo (set ``deleted_at`` + status ``cancelled``)."""
+        from datetime import datetime, timezone
+
+        with get_session() as s:
+            row = s.scalar(
+                select(TodoRow).where(
+                    TodoRow.session_id == session_id,
+                    TodoRow.todo_id == todo_id,
+                    TodoRow.deleted_at.is_(None),
+                )
+            )
+            if row is None:
+                return False
+            row.deleted_at = datetime.now(timezone.utc)
+            if row.status not in ("completed", "cancelled"):
+                row.status = "cancelled"
+            s.flush()
+            return True
+
+    def due_soon(
+        self,
+        now,
+        lookahead,
+        *,
+        limit: int = 200,
+    ) -> list[TodoRow]:
+        """Active todos due within ``[now, now + lookahead]`` that have not
+        yet been reminded (``last_reminded_at IS NULL``)."""
+        from datetime import timedelta
+
+        window_end = now + timedelta(minutes=lookahead)
+        with get_session() as s:
+            return list(
+                s.scalars(
+                    select(TodoRow).where(
+                        TodoRow.deleted_at.is_(None),
+                        TodoRow.status.in_(("open", "in_progress")),
+                        TodoRow.due_at.is_not(None),
+                        TodoRow.due_at >= now,
+                        TodoRow.due_at <= window_end,
+                        TodoRow.last_reminded_at.is_(None),
+                    )
+                    .order_by(TodoRow.due_at)
+                    .limit(limit)
+                ).all()
+            )
+
+    def mark_reminded(self, todo_id: str, when) -> None:
+        from datetime import datetime, timezone
+
+        with get_session() as s:
+            row = s.get(TodoRow, todo_id)
+            if row is not None:
+                row.last_reminded_at = when or datetime.now(timezone.utc)
+                s.flush()
+
+
+def _apply_todo_status(row: TodoRow, status: str) -> None:
+    """Set a todo's status, enforcing the lifecycle and stamping timestamps."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    row.status = status
+    if status == "completed":
+        row.completed_at = row.completed_at or now
+    else:
+        row.completed_at = None
+
+
+class EmailDraftRepo:
+    """Session-scoped CRUD for the ``email_drafts`` table (Phase 8)."""
+
+    def create(
+        self,
+        draft_id: str,
+        session_id: str,
+        *,
+        subject: str,
+        recipients: list[str],
+        body: str | None = None,
+        from_address: str | None = None,
+        source_request_id: str | None = None,
+    ) -> EmailDraftRow:
+        with get_session() as s:
+            row = EmailDraftRow(
+                draft_id=draft_id,
+                session_id=session_id,
+                subject=subject,
+                recipients=list(recipients or []),
+                body=body,
+                from_address=from_address,
+                source_request_id=source_request_id,
+            )
+            s.add(row)
+            s.flush()
+            return row
+
+    def get(self, session_id: str, draft_id: str) -> EmailDraftRow | None:
+        with get_session() as s:
+            return s.scalar(
+                select(EmailDraftRow).where(
+                    EmailDraftRow.session_id == session_id,
+                    EmailDraftRow.draft_id == draft_id,
+                )
+            )
+
+    def list_for_session(
+        self,
+        session_id: str,
+        *,
+        status: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[EmailDraftRow]:
+        with get_session() as s:
+            query = select(EmailDraftRow).where(EmailDraftRow.session_id == session_id)
+            if status:
+                query = query.where(EmailDraftRow.status == status)
+            query = query.order_by(desc(EmailDraftRow.created_at))
+            if offset:
+                query = query.offset(offset)
+            if limit:
+                query = query.limit(limit)
+            return list(s.scalars(query).all())
+
+    def update(
+        self,
+        session_id: str,
+        draft_id: str,
+        *,
+        subject: str | None = None,
+        recipients: list[str] | None = None,
+        body: str | None = None,
+        from_address: str | None = None,
+    ) -> EmailDraftRow | None:
+        with get_session() as s:
+            row = s.scalar(
+                select(EmailDraftRow).where(
+                    EmailDraftRow.session_id == session_id,
+                    EmailDraftRow.draft_id == draft_id,
+                )
+            )
+            if row is None:
+                return None
+            if subject is not None:
+                row.subject = subject
+            if recipients is not None:
+                row.recipients = list(recipients)
+            if body is not None:
+                row.body = body
+            if from_address is not None:
+                row.from_address = from_address
+            s.flush()
+            return row
+
+    def mark_sent(self, session_id: str, draft_id: str, when=None) -> EmailDraftRow | None:
+        from datetime import datetime, timezone
+
+        with get_session() as s:
+            row = s.scalar(
+                select(EmailDraftRow).where(
+                    EmailDraftRow.session_id == session_id,
+                    EmailDraftRow.draft_id == draft_id,
+                )
+            )
+            if row is None:
+                return None
+            row.status = "sent"
+            row.sent_at = when or datetime.now(timezone.utc)
+            s.flush()
+            return row
+
+    def delete(self, session_id: str, draft_id: str) -> bool:
+        with get_session() as s:
+            row = s.scalar(
+                select(EmailDraftRow).where(
+                    EmailDraftRow.session_id == session_id,
+                    EmailDraftRow.draft_id == draft_id,
+                )
+            )
+            if row is None:
+                return False
+            s.delete(row)
+            s.flush()
+            return True
+
+
 class _Repos:
     sessions = SessionRepo()
     messages = MessageRepo()
@@ -893,6 +1207,8 @@ class _Repos:
     tasks = TaskRepo()
     feedback = FeedbackRepo()
     cloud_usage = CloudUsageRepo()
+    todos = TodoRepo()
+    email_drafts = EmailDraftRepo()
 
 
 repos = _Repos
@@ -906,5 +1222,7 @@ __all__ = [
     "ApprovalRepo",
     "TaskRepo",
     "CloudUsageRepo",
+    "TodoRepo",
+    "EmailDraftRepo",
     "repos",
 ]

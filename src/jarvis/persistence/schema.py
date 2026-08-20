@@ -109,8 +109,9 @@ def current_schema_version(engine: Engine | None = None) -> int:
 def _record_version(engine: Engine, version: int) -> None:
     from datetime import datetime, timezone
 
-    # naive UTC avoids the deprecated sqlite3 aware-datetime adapter
-    applied_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    # Stored as an ISO-8601 string to avoid the deprecated sqlite3 datetime
+    # adapter (and to be dialect-agnostic for Postgres).
+    applied_at = datetime.now(timezone.utc).isoformat()
     with engine.begin() as conn:
         conn.execute(
             text(f"INSERT INTO {SCHEMA_VERSION_TABLE} (version, applied_at) VALUES (:v, :at)"),

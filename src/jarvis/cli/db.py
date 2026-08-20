@@ -41,7 +41,6 @@ def _migrate() -> int:
         print(f"Applied schema migrations: {applied}")
     else:
         print("No migrations to apply (schema up to date).")
-    current = current_schema_version()
     ok, messages = validate_schema()
     for m in messages:
         print(f"  {m}")

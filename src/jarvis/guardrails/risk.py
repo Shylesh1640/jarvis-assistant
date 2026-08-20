@@ -14,6 +14,11 @@ _HIGH_RISK_TOOLS = {
     "drop_database",
     "format_disk",
     "shutdown",
+    "delete_todo",
+    "delete_event",
+    "delete_email_draft",
+    "send_email_draft",
+    "run_connector",
 }
 
 _MEDIUM_RISK_TOOLS = {
@@ -23,6 +28,13 @@ _MEDIUM_RISK_TOOLS = {
     "http_request",
     "pip_install",
     "subprocess_run",
+    "create_todo",
+    "complete_todo",
+    "update_todo",
+    "create_event",
+    "update_event",
+    "create_email_draft",
+    "update_email_draft",
 }
 
 _LOW_RISK_TOOLS = {
@@ -32,6 +44,11 @@ _LOW_RISK_TOOLS = {
     "calculator",
     "rag_search",
     "read_file",
+    "list_todos",
+    "list_calendars",
+    "list_events",
+    "list_email_drafts",
+    "list_connectors",
 }
 
 _HIGH_RISK_ARGS = {

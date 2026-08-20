@@ -42,6 +42,9 @@ jarvis-backup = "jarvis.cli.backup:main"
 jarvis-verify-backup = "jarvis.cli.backup:verify_latest_main"
 jarvis-admin = "jarvis.cli.admin:main"
 jarvis-db = "jarvis.cli.db:main"
+jarvis-todo = "jarvis.cli.todo:main"
+jarvis-calendar = "jarvis.cli.calendar:main"
+jarvis-email = "jarvis.cli.email:main"
 
 [dependency-groups]
 dev = [

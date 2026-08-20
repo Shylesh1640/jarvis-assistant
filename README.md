@@ -20,7 +20,7 @@ Copy `.env.example` to `.env` and adjust model names to match `ollama list`.
 uv run uvicorn jarvis.api.main:app --reload --app-dir src
 ```
 
-API endpoints: `GET /health`, `GET /models`, `GET /documents/count`,
+API endpoints: `GET /health`, `GET /ready`, `GET /models`, `GET /documents/count`,
 `POST /documents/upload`, `POST /documents/ingest-folder`, `POST /chat`,
 `POST /tasks`, `GET /tasks/{task_id}`, `GET /runtime`,
 `GET /sessions/{session_id}/token` (per-session bearer token), and
@@ -34,6 +34,17 @@ Phase 5+ management endpoints: `GET/DELETE /documents` (list / delete with
 `confirm=1`), `POST/GET/DELETE /feedback` (rate replies; `jarvis-evaluate`
 summarises them), and `GET /cost` (estimated cloud spend vs
 `CLOUD_DAILY_BUDGET_USD`).
+
+Phase 8 integration endpoints (all **off by default**, see
+[docs/integrations.md](docs/integrations.md)): `POST/GET/GET{id}/PATCH/DELETE
+/todos` plus `POST /todos/{id}/complete` (local tasks & reminders),
+`GET /calendar/calendars` + `/calendar/events` (provider-backed),
+`POST/GET/GET{id}/PATCH/DELETE /email-drafts` plus
+`POST /email-drafts/{id}/send` (local drafts, provider-backed send),
+`GET /connectors` + `POST /connectors/{id}/execute`, `POST /ide/*`
+(workspace-confined, confirm-gated) and `POST /voice/transcribe` +
+`POST /voice/synthesize`. Companion CLIs: `jarvis-todo`, `jarvis-calendar`,
+`jarvis-email`.
 
 ## Run frontend
 
@@ -345,6 +356,28 @@ curl http://127.0.0.1:8000/runtime
 uv run jarvis-validate-runtime
 ```
 
+## Phase 8 CLIs — tasks, calendar, email
+
+```powershell
+# local todos (fully local)
+uv run jarvis-todo add "Ship Phase 8" --priority high --due 2026-08-21T09:00:00Z --yes
+uv run jarvis-todo list
+uv run jarvis-todo complete <todo_id> --yes
+uv run jarvis-todo delete <todo_id> --yes
+
+# calendar (needs CALENDAR_ENABLED + CALENDAR_PROVIDER)
+uv run jarvis-calendar list
+uv run jarvis-calendar add "Sync" --start 2026-08-21T10:00:00Z --end 2026-08-21T11:00:00Z --yes
+
+# email drafts (draft/list are local; send needs EMAIL_ENABLED + EMAIL_PROVIDER)
+uv run jarvis-email draft --subject "Hello" --recipients a@b.com,c@d.com
+uv run jarvis-email list
+uv run jarvis-email send <draft_id> --yes
+```
+
+Writes prompt for confirmation unless `--yes` is passed. See
+[docs/integrations.md](docs/integrations.md).
+
 ## Benchmarking & performance regression
 
 ### `jarvis-benchmark` — GPU/CPU performance runs
@@ -593,15 +626,41 @@ All settings live in `src/jarvis/config/settings.py` and are loaded from
 | `SESSION_TOKEN_TTL_HOURS` | `168` | Token validity window before a rotation is forced on next use |
 | `SESSION_TOKEN_ROTATION_HOURS` | `72` | Passive token rotation cadence (hours) |
 | `TRACE_RETENTION_LIMIT` | `256` | Max in-memory request traces retained for `GET /traces/recent` |
+| `TODO_REMINDER_SCAN_INTERVAL_SECONDS` | `300` | Reminder worker scan interval, seconds (`0` disables the worker thread) |
+| `TODO_REMINDER_LOOKAHEAD_MINUTES` | `30` | How far ahead a todo's `due_at` must be to trigger a reminder |
+| `CALENDAR_ENABLED` | `false` | Master switch for the calendar integration (off = "not configured") |
+| `CALENDAR_PROVIDER` | _empty_ | Calendar provider registry name (e.g. `google_calendar`) |
+| `CALENDAR_CREDENTIALS_PATH` | _empty_ | Path to the provider's JSON credentials (never stored/logged) |
+| `CALENDAR_DEFAULT_CALENDAR_ID` | _empty_ | Default calendar for created events |
+| `EMAIL_ENABLED` | `false` | Master switch for *sending* drafts (drafts are always local) |
+| `EMAIL_PROVIDER` | _empty_ | Email provider registry name (e.g. `smtp`) |
+| `EMAIL_CREDENTIALS_PATH` | _empty_ | Path to the provider's JSON credentials (never stored/logged) |
+| `EMAIL_DEFAULT_FROM` | _empty_ | From-address used when a draft doesn't specify one |
+| `CONNECTORS_ENABLED` | `false` | Master switch for external connectors (off = "not configured") |
+| `CONNECTORS_CONFIG_PATH` | `./config/connectors.json` | JSON file listing configured connectors |
+| `IDE_INTEGRATION_ENABLED` | `false` | Master switch for `/ide` (off = "not configured") |
+| `IDE_WORKSPACE_ROOT` | _empty_ | Absolute path every IDE operation is confined to |
+| `VOICE_INPUT_ENABLED` | `false` | Master switch for speech-to-text |
+| `VOICE_OUTPUT_ENABLED` | `false` | Master switch for text-to-speech |
+| `VOICE_INPUT_PROVIDER` / `VOICE_OUTPUT_PROVIDER` | _empty_ | Voice provider registry names |
+| `VOICE_CREDENTIALS_PATH` | _empty_ | Path to the provider's JSON credentials (never stored/logged) |
 
 ## Project structure
 
 ```text
 src/jarvis/
-├── api/                # FastAPI app, routes/, schemas/, errors.py
-│   ├── main.py        # app + lifespan + /health + /models + /runtime
+├── api/                # FastAPI app, routes/, schemas/, errors.py, security.py
+│   ├── main.py        # app + lifespan + /health + /ready + /models + /runtime
 │   └── routes/        # chat.py, documents.py, tasks.py, runtime.py, sessions.py,
-│                      #   traces.py, memory.py, feedback.py, cost.py
+│                      #   traces.py, memory.py, feedback.py, cost.py,
+│                      #   todos.py, calendar.py, email_drafts.py, connectors.py,
+│                      #   ide.py, voice.py
+├── calendar/          # Phase 8: CalendarProvider protocol + registry
+├── connectors/        # Phase 8: Connector protocol + registry + config loader
+├── email/             # Phase 8: EmailProvider protocol + draft helpers
+├── ide/               # Phase 8: workspace-confined IDE executor
+├── voice/             # Phase 8: voice input/output provider protocols
+├── todos/             # Phase 8: todo domain rules (status transitions, due parsing)
 ├── security/          # session_auth.py (tokens), ratelimit.py
 ├── observability/     # trace.py (trace ids + bounded registry)
 ├── orchestration/     # LangGraph state, router, branches, graph, approval gate
@@ -615,13 +674,15 @@ src/jarvis/
 │   └── approval_node.py # check_risk + approval_gate + TTL (human-in-the-loop)
 ├── models/            # ollama_client.py, openrouter_client.py, cost_guard.py, runtime_diagnostics.py
 ├── tools/             # general + coding (write/edit/shell/run_tests/git_diff/list_directory) + registry.py
-├── persistence/       # SQLAlchemy engine, models, repos (Postgres SQLite)
+├── persistence/       # SQLAlchemy engine, models, repos, schema.py (versioned migrations)
 ├── memory/            # ChromaDB store.py (multi-format ingest) + retrieve.py (hybrid)
 │                      #   + summaries.py + memory_store.py + document_manager.py + query_quality.py
 ├── guardrails/        # input_guard, output_guard (PII + secret tokens), risk classification
-├── cli/               # ingest.py, validate_runtime.py, evaluate.py
-│                      #   (jarvis-ingest / jarvis-validate-runtime / jarvis-evaluate)
-└── config/            # settings loaded from .env
+├── cli/               # ingest.py, validate_runtime.py, evaluate.py, backup.py, admin.py, db.py
+│                      #   (jarvis-ingest / jarvis-validate-runtime / jarvis-evaluate /
+│                      #    jarvis-backup / jarvis-verify-backup / jarvis-admin / jarvis-db)
+├── backup/            # backup.py (create/verify/list/delete, checksums, no auto-delete)
+└── config/            # settings loaded from .env + deployment.py (profiles)
 ```
 
 ## Architecture
@@ -881,18 +942,33 @@ comment) with durable storage, thumbs buttons in the Streamlit chat, and a
 (`CLOUD_MAX_PROMPT_TOKENS`) and pauses cloud calls past a daily budget
 (`CLOUD_DAILY_BUDGET_USD`), with `GET /cost` diagnostics and automatic
 fallback to local models — covered by `tests/test_cost_guardrails.py`
-✅ **Production hardening** — GPU fallback policy (`GPU_POLICY`:
-`require_gpu`/`prefer_gpu`/`allow_cpu`, typed 507 `gpu_required`, honest
-processor-split metadata, strong-model routing) in `tests/test_gpu_policy.py`;
-session tokens hashed at rest (argon2/bcrypt/pbkdf2) with passive rotation +
-`rotate-token`/`revoke` endpoints in `tests/test_token_security.py`; cloud
-cost pricing + per-request/per-session caps + approval gate + `cloud_usage`
-persistence in `tests/test_cloud_cost.py`; `jarvis-benchmark` +
-`jarvis-evaluate-performance` regression CLIs in
-`tests/test_performance_eval.py`; observability traces with GPU/cost/latency
-fields and configurable `TRACE_RETENTION_LIMIT` in `tests/test_trace.py`
+✅ **Phase 7 — deployment, multi-user operations, backups & maintenance** —
+deployment profiles (`DEPLOYMENT_PROFILE`: local / single_host / production)
+with startup validation + a `deployment` block in `GET /runtime` in
+`tests/test_deployment_profiles.py`; network security (CORS with explicit
+origins, trusted-host middleware, security headers, HSTS, reverse-proxy IP
+awareness) + `GET /ready` profile readiness in `tests/test_network_security.py`;
+backup tooling (`jarvis-backup` / `jarvis-verify-backup`, checksummed +
+verifiable, never auto-deletes) in `tests/test_backup.py`; versioned additive
+schema migrations (`schema_version` table, `jarvis-db` CLI) in
+`tests/test_schema_migrations.py`; read-only `jarvis-admin` status in
+`tests/test_admin_cli.py`; CI workflow + pre-commit config; and
+deployment/backup/operations/security docs
+✅ **Phase 8 — integrations & personal productivity** — local per-session
+todos with a reminder worker (`tests/test_todos.py`); calendar, email and
+voice behind opt-in provider protocols (`tests/test_calendar.py`,
+`test_email_drafts.py`, `test_voice.py`); sanitised external connectors from
+a config file (`tests/test_connectors.py`); workspace-confined IDE
+endpoints (`tests/test_ide.py`); `jarvis-todo` / `jarvis-calendar` /
+`jarvis-email` CLIs (`tests/test_cli_integration.py`). Everything is off by
+default, writes need `confirm=1` / tool approval, and all tests use mocks —
+see [docs/integrations.md](docs/integrations.md)
 
 ## Docs
 
-See `docs/api.md` for the full endpoint reference and `docs/troubleshooting.md`
-for common issues and fixes.
+See `docs/api.md` for the full endpoint reference, `docs/troubleshooting.md`
+for common issues and fixes, and the Phase 7 operational guides:
+`docs/deployment.md`, `docs/backup-and-restore.md`, `docs/operations.md`, and
+`docs/security.md`. Phase 8 feature guides start at
+`docs/integrations.md` (tasks & reminders, calendar, email drafts, external
+connectors, IDE, voice).

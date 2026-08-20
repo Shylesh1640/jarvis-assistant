@@ -1,8 +1,6 @@
 """Tests for Phase 7 deployment profiles (local / single_host / production)."""
 from __future__ import annotations
 
-import pytest
-
 from jarvis.config import deployment as dep
 from jarvis.config.deployment import (
     deployment_capability_report,

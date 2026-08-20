@@ -13,6 +13,11 @@ from jarvis.api.errors import (
     unexpected_error_to_json,
 )
 from jarvis.api.routes.chat import router as chat_router
+from jarvis.api.routes.calendar import router as calendar_router
+from jarvis.api.routes.connectors import router as connectors_router
+from jarvis.api.routes.email_drafts import router as email_drafts_router
+from jarvis.api.routes.ide import router as ide_router
+from jarvis.api.routes.voice import router as voice_router
 from jarvis.api.routes.cost import router as cost_router
 from jarvis.api.routes.documents import router as documents_router
 from jarvis.api.routes.feedback import router as feedback_router
@@ -21,6 +26,8 @@ from jarvis.api.routes.runtime import router as runtime_router
 from jarvis.api.routes.sessions import router as sessions_router
 from jarvis.api.routes.tasks import router as tasks_router
 from jarvis.api.routes.traces import router as traces_router
+from jarvis.api.routes.todos import router as todos_router
+from jarvis.api.security import install_security_stack
 from jarvis.config.settings import settings
 from jarvis.observability.logging_config import setup_logging
 
@@ -58,6 +65,16 @@ def _startup() -> None:
             )
     except Exception as exc:  # noqa: BLE001
         logging.getLogger("jarvis.api").warning("Stale-task recovery failed: %s", exc)
+    try:
+        from jarvis.tasks.reminders import scan_once
+
+        result = scan_once()
+        if result.get("fired"):
+            logging.getLogger("jarvis.api").info(
+                "Startup reminder scan fired %d reminder(s)", result["fired"]
+            )
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger("jarvis.api").warning("Startup reminder scan failed: %s", exc)
 
 
 def _log_deployment_warnings() -> None:
@@ -81,10 +98,16 @@ async def lifespan(app: FastAPI):
     from jarvis.tasks.maintenance import start_sweeper
 
     start_sweeper()
+    from jarvis.tasks.reminders import start_reminder_worker
+
+    start_reminder_worker()
     yield
     from jarvis.tasks.maintenance import stop_sweeper
 
     stop_sweeper()
+    from jarvis.tasks.reminders import stop_reminder_worker
+
+    stop_reminder_worker()
 
 
 app = FastAPI(title="Jarvis Assistant API", version="0.2.0", lifespan=lifespan)
@@ -92,8 +115,6 @@ app = FastAPI(title="Jarvis Assistant API", version="0.2.0", lifespan=lifespan)
 
 # Phase 7 :: network security (CORS, trusted hosts, headers, proxy awareness).
 # Installed at import so every request (including /ready) is protected.
-from jarvis.api.security import install_security_stack
-
 install_security_stack(app)
 
 
@@ -156,6 +177,12 @@ app.include_router(cost_router)
 app.include_router(runtime_router)
 app.include_router(sessions_router)
 app.include_router(traces_router)
+app.include_router(todos_router)
+app.include_router(calendar_router)
+app.include_router(email_drafts_router)
+app.include_router(connectors_router)
+app.include_router(ide_router)
+app.include_router(voice_router)
 
 
 @app.get("/health")

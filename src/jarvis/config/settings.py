@@ -113,6 +113,64 @@ class Settings(BaseSettings):
     # the sweep thread (startup-only cleanup).
     maintenance_sweep_interval: int = 300
 
+    # --- Phase 8 :: todos & reminders ---
+    # How often the reminder worker scans for due-soon todos (seconds).
+    # 0 disables the worker thread (a single scan still runs at startup).
+    todo_reminder_scan_interval_seconds: int = 300
+    # How far ahead (minutes) a todo's due_at must be to trigger a reminder.
+    todo_reminder_lookahead_minutes: int = 30
+
+    # --- Phase 8 :: calendar integration ---
+    # Master switch. When false (default) calendar routes/tools report a
+    # structured "not configured" response and never touch the network.
+    calendar_enabled: bool = False
+    # Registry name of the provider (e.g. "google_calendar"). Empty = off.
+    calendar_provider: str = ""
+    # Path to a JSON credentials file the provider reads itself. Never
+    # stored in the DB and never logged.
+    calendar_credentials_path: str = ""
+    # Default calendar to create events in when the caller doesn't specify one.
+    calendar_default_calendar_id: str = ""
+
+    # --- Phase 8 :: email drafts ---
+    # Master switch for *sending*. Drafts work locally regardless. When false
+    # the send endpoint/tool report "not configured" and never touch network.
+    email_enabled: bool = False
+    # Registry name of the provider (e.g. "smtp"). Empty = off.
+    email_provider: str = ""
+    # Path to a JSON credentials file the provider reads itself. Never
+    # stored in the DB and never logged.
+    email_credentials_path: str = ""
+    # From-address used when the draft doesn't specify one.
+    email_default_from: str = ""
+
+    # --- Phase 8 :: external connectors ---
+    # Master switch. When false (default) connector routes/tools report a
+    # structured "not configured" response and never touch external services.
+    connectors_enabled: bool = False
+    # JSON file listing configured connectors (see docs/integrations.md).
+    connectors_config_path: str = "./config/connectors.json"
+
+    # --- Phase 8 :: IDE integration ---
+    # Master switch. When false (default) /ide routes report "not configured".
+    ide_integration_enabled: bool = False
+    # Absolute path to the workspace all IDE operations are confined to.
+    # Empty = not configured (nothing runs).
+    ide_workspace_root: str = ""
+
+    # --- Phase 8 :: voice interface ---
+    # Master switches. When false (default) /voice routes report "not
+    # configured" and never touch a speech API.
+    voice_input_enabled: bool = False
+    voice_output_enabled: bool = False
+    # Registry names of the providers (e.g. "whisper_local", "edge_tts").
+    # Empty = off.
+    voice_input_provider: str = ""
+    voice_output_provider: str = ""
+    # Path to a JSON credentials file the providers read themselves. Never
+    # stored in the DB and never logged.
+    voice_credentials_path: str = ""
+
     # --- Error handling / retry ---
     # Retries for *transient* Ollama failures (server down mid-flight,
     # request timeouts). Persistent errors (model missing, OOM) do NOT count
