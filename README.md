@@ -102,6 +102,23 @@ token obtained from `GET /sessions/{session_id}/token`. Tokens are per-session
 stable for the life of the session. When disabled (default) the token is
 optional and only used to label the session.
 
+#### Token security at rest (production hardening)
+
+Tokens are stored **hashed** (never in plaintext). The hash algorithm is
+configurable (`SESSION_TOKEN_HASH_SCHEME`): `argon2` (default), `bcrypt`, or
+`pbkdf2`. Inside the process the issued token is cached in a small bounded
+in-memory map so the same session returns the *same* token for its lifetime —
+after a backend restart the plaintext is gone and the token **rotates**
+automatically on next use, so a leaked database file exposes only hashes.
+
+- `POST /sessions/{session_id}/rotate-token` — explicitly rotate the token
+  (immediately invalidates the old one).
+- `POST /sessions/{session_id}/revoke` — revoke the token; a revoked token is
+  rejected with **403** until a new one is issued.
+- Tokens expire after `SESSION_TOKEN_TTL_HOURS` (absolute, no sliding) and
+  rotate passively at `SESSION_TOKEN_ROTATION_HOURS`; expiry/rotation timestamps
+  are reported in `GET /sessions/{session_id}`.
+
 ### Rate limiting
 
 `RATE_LIMIT_PER_MINUTE` (default 300, `0` disables) throttles requests per
@@ -141,9 +158,33 @@ then carries a warning so you know the run was CPU-only.
 Each request receives a **trace id** propagated to LangGraph runs, background
 tasks and errors; the id is logged and recorded in the bounded in-memory trace
 registry of the most recent runs (`GET /traces/recent`) with per-node timing
-and durations. The Streamlit sidebar shows a "Traces" panel that refreshes
-these live; `JSON_LOGS_ENABLED=true` switches the log format to JSON for
-parsing.
+and durations. Every finished trace records GPU policy / processor split /
+cloud usage / estimated cost alongside the duration. `TRACE_RETENTION_LIMIT`
+(default 256) caps how many traces are kept in memory. The Streamlit sidebar
+shows a "Traces" panel that refreshes these live; `JSON_LOGS_ENABLED=true`
+switches the log format to JSON for parsing.
+
+### Cloud cost guardrails
+
+Cloud (complex-branch) calls are protected by `CostGuard` (`src/jarvis/models/cost_guard.py`):
+
+- **Per-request cap** — `CLOUD_MAX_REQUEST_COST_USD` (default 0.25): the prompt
+  is priced against `config/model_pricing.json` before any API call; oversized
+  requests are refused with a typed error and the branch falls back to local.
+- **Per-session cap** — `CLOUD_MAX_SESSION_COST_USD` (default 2.0): once a
+  session's cumulative estimate passes the cap, further cloud calls are refused.
+- **Daily budget** — `CLOUD_DAILY_BUDGET_USD` (`0` = unlimited): cloud calls
+  fall back to local once the day's spend is reached.
+- **Approval gate** — `CLOUD_REQUIRE_COST_APPROVAL=true` (default): the complex
+  branch pauses and shows an estimated-cost approval card; it resumes only when
+  you approve (`approved=true` on `POST /chat`), and the estimate is recorded.
+- **Usage persistence** — `CLOUD_COST_TRACKING_ENABLED=true`: every cloud call
+  writes a `cloud_usage` row (model, session, tokens, estimated cost) surfaced
+  through `GET /cost` (`spend_today`, per-session totals, recent calls).
+- Pricing comes from `config/model_pricing.json` (exact + substring model
+  rules with sensible defaults for unknown models); edit it or point
+  `CLOUD_PRICING_CONFIG_PATH` at your own table. Actual token usage from the
+  provider is recorded when available.
 
 ### Secret-token redaction
 
@@ -264,6 +305,27 @@ gpu_to_cpu`). This is by design, not a config error.
   Docker backend it shows `Unknown` because the container lacks `ollama` /
   `nvidia-smi` (see the Terminal Test Suite section).
 
+### GPU fallback policy (`GPU_POLICY`)
+
+`GPU_POLICY` controls what happens when the requested local model cannot run
+fully on the GPU:
+
+| Policy | Behavior |
+|---|---|
+| `require_gpu` | The request **refuses to run on CPU**. If the model does not fit VRAM (or the split would be partial when `GPU_REQUIRE_FULL_OFFLOAD=true`), the API returns a typed **507 `gpu_required`** error with a `suggested_action` — never a silent CPU fallback. |
+| `prefer_gpu` (default) | Use GPU offload when it fits; on OOM / VRAM pressure, retry once on CPU (`GPU_ALLOW_CPU_FALLBACK=true`) and mark the response `fallback_used` + a warning. |
+| `allow_cpu` | Never block on GPU availability; CPU execution is always permitted. |
+
+Additional knobs: `GPU_RUNTIME_CHECK_ENABLED` probes VRAM headroom at request
+time (using Ollama's `/api/show` — the probe is only fired for `require_gpu`
+or for a strong model under `prefer_gpu`, never on every request);
+`GPU_MAX_VRAM_PERCENT` / `GPU_MIN_FREE_VRAM_MB` bound when fallback is
+considered; `GPU_STRONG_MODEL_ALLOW_PARTIAL_OFFLOAD=false` routes a
+too-large strong model to `FALLBACK_MODEL` (or the general model) instead of
+splitting layers. Every decision is recorded on the response and in the trace
+(`gpu_policy`, `processor_split`, `gpu_fallback_used`, `cpu_fallback_used`,
+`runtime_warning`).
+
 ### Verification commands (Windows PowerShell)
 
 ```powershell
@@ -282,6 +344,43 @@ curl http://127.0.0.1:8000/runtime
 # Startup validation (reachable + model exists + test chat + GPU avail)
 uv run jarvis-validate-runtime
 ```
+
+## Benchmarking & performance regression
+
+### `jarvis-benchmark` — GPU/CPU performance runs
+
+A safe benchmark that runs a prompt at several context sizes against the
+configured local model and reports honest latency / token / processor-split
+figures. Baselines are stored in `reports/baseline.json` (no prompts,
+responses, or secrets — only safe metadata + metrics):
+
+```bash
+# run a benchmark
+uv run jarvis-benchmark --model qwen3:8b
+
+# persist the run as the regression baseline
+uv run jarvis-benchmark --model qwen3:8b --save-baseline
+
+# compare the latest run against the saved baseline
+uv run jarvis-benchmark --model qwen3:8b --compare-baseline
+```
+
+### `jarvis-evaluate-performance` — scenario regression suite
+
+A deterministic scenario suite over the routing branches (general / coding /
+RAG / tool-call / background-planning). It uses a **mock runner by default**
+(no LLM, GPU, or cloud involved), and touches local Ollama only with `--live`.
+The cloud is never called — `--allow-cloud` exists only for CLI parity:
+
+```bash
+uv run jarvis-evaluate-performance                    # mock, all scenarios
+uv run jarvis-evaluate-performance --scenario coding  # one scenario
+uv run jarvis-evaluate-performance --live             # opt-in local Ollama
+uv run jarvis-evaluate-performance --output eval.json --markdown eval.md
+```
+
+Both CLIs are covered by `tests/test_performance_eval.py` and the benchmark
+tests in `tests/test_benchmark.py`.
 
 ### Interpreting the processor split
 
@@ -448,6 +547,11 @@ All settings live in `src/jarvis/config/settings.py` and are loaded from
 | `MAX_TASK_DURATION_SECONDS` | `0` | Hard wall-clock cap for a background task (`0` = unlimited) |
 | `CLOUD_MAX_PROMPT_TOKENS` | `0` | Refuse cloud calls whose prompt exceeds this estimate (`0` = unlimited) |
 | `CLOUD_DAILY_BUDGET_USD` | `0` | Rough daily cloud-spend budget; cloud falls back to local once reached |
+| `CLOUD_MAX_REQUEST_COST_USD` | `0.25` | Refuse a cloud call whose estimated prompt cost exceeds this (USD) |
+| `CLOUD_MAX_SESSION_COST_USD` | `2.0` | Refuse further cloud calls in a session once its cumulative estimate passes this (USD) |
+| `CLOUD_REQUIRE_COST_APPROVAL` | `true` | Pause for explicit human approval (with estimated cost) before any cloud call |
+| `CLOUD_COST_TRACKING_ENABLED` | `true` | Persist each cloud call's estimated cost to the `cloud_usage` table (`GET /cost`) |
+| `CLOUD_PRICING_CONFIG_PATH` | `./config/model_pricing.json` | JSON pricing table (models + per-1M-token USD rates) used for estimates |
 | `GPU_OPTIMIZATION_ENABLED` | `true` | Master switch for request-level Ollama runtime options |
 | `OLLAMA_NUM_GPU` | `-1` | Offload ALL layers to GPU (100% GPU, no system-RAM spill) |
 | `OLLAMA_CONTEXT_LENGTH` | `8192` | `num_ctx` sent per request |
@@ -478,6 +582,17 @@ All settings live in `src/jarvis/config/settings.py` and are loaded from
 | `SESSION_TTL_DAYS` | `7` | Delete sessions inactive for this many days (`0` disables) |
 | `EXPIRED_APPROVAL_RETENTION_HOURS` | `24` | Hard-delete expired approval rows after this many hours |
 | `MAINTENANCE_SWEEP_INTERVAL` | `300` | Periodic maintenance sweep interval, seconds (`0` disables) |
+| `GPU_POLICY` | `prefer_gpu` | `require_gpu` / `prefer_gpu` / `allow_cpu` — how GPU unavailability is handled (see GPU fallback policy) |
+| `GPU_REQUIRE_FULL_OFFLOAD` | `false` | `require_gpu`: treat a partial CPU/GPU split as a policy violation |
+| `GPU_MAX_VRAM_PERCENT` | `95` | Estimated max VRAM a model may use (0-100) before fallback is considered |
+| `GPU_MIN_FREE_VRAM_MB` | `512` | Minimum free VRAM (MB) required before loading a strong model on GPU |
+| `GPU_RUNTIME_CHECK_ENABLED` | `true` | Probe VRAM headroom at request time for `require_gpu` / `prefer_gpu` |
+| `GPU_STRONG_MODEL_ALLOW_PARTIAL_OFFLOAD` | `false` | When the strong local model exceeds VRAM, route to the fallback model instead of partial offload |
+| `GPU_ALLOW_CPU_FALLBACK` | `true` | `prefer_gpu` / `allow_cpu`: retry once on CPU instead of failing |
+| `SESSION_TOKEN_HASH_SCHEME` | `argon2` | Hash algorithm for session tokens at rest: `argon2` / `bcrypt` / `pbkdf2` |
+| `SESSION_TOKEN_TTL_HOURS` | `168` | Token validity window before a rotation is forced on next use |
+| `SESSION_TOKEN_ROTATION_HOURS` | `72` | Passive token rotation cadence (hours) |
+| `TRACE_RETENTION_LIMIT` | `256` | Max in-memory request traces retained for `GET /traces/recent` |
 
 ## Project structure
 
@@ -766,6 +881,16 @@ comment) with durable storage, thumbs buttons in the Streamlit chat, and a
 (`CLOUD_MAX_PROMPT_TOKENS`) and pauses cloud calls past a daily budget
 (`CLOUD_DAILY_BUDGET_USD`), with `GET /cost` diagnostics and automatic
 fallback to local models — covered by `tests/test_cost_guardrails.py`
+✅ **Production hardening** — GPU fallback policy (`GPU_POLICY`:
+`require_gpu`/`prefer_gpu`/`allow_cpu`, typed 507 `gpu_required`, honest
+processor-split metadata, strong-model routing) in `tests/test_gpu_policy.py`;
+session tokens hashed at rest (argon2/bcrypt/pbkdf2) with passive rotation +
+`rotate-token`/`revoke` endpoints in `tests/test_token_security.py`; cloud
+cost pricing + per-request/per-session caps + approval gate + `cloud_usage`
+persistence in `tests/test_cloud_cost.py`; `jarvis-benchmark` +
+`jarvis-evaluate-performance` regression CLIs in
+`tests/test_performance_eval.py`; observability traces with GPU/cost/latency
+fields and configurable `TRACE_RETENTION_LIMIT` in `tests/test_trace.py`
 
 ## Docs
 

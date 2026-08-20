@@ -59,3 +59,10 @@ class JarvisState(TypedDict, total=False):
     # When True, this turn runs as a background /tasks job. Branches use it
     # to record status instead of streaming a reply.
     as_background_task: bool
+
+    # Phase 6 :: GPU policy metadata recorded by branches.
+    gpu_policy: str
+    processor_split: str
+    gpu_fallback_used: bool
+    cpu_fallback_used: bool
+    runtime_warning: str | None

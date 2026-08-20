@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "comment": "Cloud (OpenRouter) model pricing for the cost guardrails. Prompt/completion USD per 1M tokens. Exact model keys match first; substring rules apply as a fallback; everything else uses the defaults. Override CLOUD_PRICING_CONFIG_PATH to point at your own file.",
+  "default_prompt_per_1m_usd": 3.0,
+  "default_completion_per_1m_usd": 9.0,
+  "models": {
+    "anthropic/claude-opus-4.1": {"prompt_per_1m_usd": 15.0, "completion_per_1m_usd": 75.0},
+    "openai/gpt-5.5": {"prompt_per_1m_usd": 1.25, "completion_per_1m_usd": 10.0},
+    "google/gemini-2.5-pro": {"prompt_per_1m_usd": 2.50, "completion_per_1m_usd": 15.0}
+  },
+  "substring_rules": {
+    "claude": {"prompt_per_1m_usd": 15.0, "completion_per_1m_usd": 75.0},
+    "gpt-5.5": {"prompt_per_1m_usd": 1.25, "completion_per_1m_usd": 10.0},
+    "gpt": {"prompt_per_1m_usd": 1.25, "completion_per_1m_usd": 10.0},
+    "gemini": {"prompt_per_1m_usd": 2.50, "completion_per_1m_usd": 15.0},
+    "openai": {"prompt_per_1m_usd": 1.25, "completion_per_1m_usd": 10.0},
+    "deepseek": {"prompt_per_1m_usd": 0.55, "completion_per_1m_usd": 2.19}
+  }
+}

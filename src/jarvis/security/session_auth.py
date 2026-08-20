@@ -17,12 +17,27 @@ from jarvis.persistence import repos
 
 
 def issue_token(session_id: str, *, user_id: str | None = None) -> str:
-    """Create the session if needed and return its bearer token."""
+    """Create the session if needed and return its bearer token.
+
+    The token is stored *hashed* at rest; the plaintext is held only in the
+    process-local issuance cache so repeated calls return the same token
+    until the backend restarts (after which it rotates).
+    """
     return repos.sessions.ensure_token(session_id, user_id=user_id)
 
 
 def is_valid_token(session_id: str, token: str | None) -> bool:
     return repos.sessions.is_token_valid(session_id, token)
+
+
+def rotate_token(session_id: str) -> str | None:
+    """Force a new token for *session_id*; old token stops validating."""
+    return repos.sessions.rotate_token(session_id)
+
+
+def revoke_token(session_id: str) -> bool:
+    """Revoke the session's token immediately."""
+    return repos.sessions.revoke_token(session_id)
 
 
 def ensure_session_context(session_id: str, token: str | None) -> None:
@@ -56,4 +71,4 @@ def ensure_session_context(session_id: str, token: str | None) -> None:
             )
 
 
-__all__ = ["issue_token", "is_valid_token", "ensure_session_context"]
+__all__ = ["issue_token", "is_valid_token", "rotate_token", "revoke_token", "ensure_session_context"]

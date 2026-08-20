@@ -46,6 +46,16 @@ class ChatResponse(BaseModel):
     # Performance metadata: wall-clock time spent producing this reply
     # (excluding any time the request spent waiting for approval), in seconds.
     elapsed_seconds: float | None = None
+    # Phase 6 GPU policy metadata: how this reply actually executed.
+    gpu_policy: str | None = None
+    processor_split: str | None = None
+    gpu_fallback_used: bool = False
+    cpu_fallback_used: bool = False
+    # Phase 6 cloud cost metadata: whether the cloud was used and the
+    # estimated cost (USD) of the prompt for this reply.
+    cloud_used: bool = False
+    estimated_cost_usd: float | None = None
+    runtime_warning: str | None = None
 
 
 class TaskCreateRequest(BaseModel):

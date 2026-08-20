@@ -5,6 +5,8 @@ import time
 from langchain_core.messages import ToolMessage
 
 from jarvis.config.settings import settings
+from jarvis.models.cost_guard import estimate_prompt_cost_usd
+from jarvis.models.gpu_policy import GPUPlan, GPURequiredError, decide_execution_plan
 from jarvis.models.ollama_client import get_model_named
 from jarvis.models.openrouter_client import run_complex_with_fallback
 from jarvis.orchestration.context_window import (
@@ -188,6 +190,75 @@ def _invoke_branch_llm(
 # General branch  (tool-calling LLM with sliding-window context)
 # ---------------------------------------------------------------------------
 
+def _apply_gpu_plan(
+    state: JarvisState,
+    model_name: str,
+    *,
+    is_strong_model: bool,
+    context_length: int,
+) -> tuple[str, GPUPlan]:
+    """Decide how *model_name* runs on the GPU and record the decision.
+
+    Returns (effective_model, plan). The effective model differs from
+    *model_name* only when the strong local model cannot run on GPU and the
+    policy routes to a configured fallback. Raises ``GPURequiredError`` when
+    ``GPU_POLICY=require_gpu`` cannot be satisfied (never silent CPU).
+    """
+    cfg = settings
+    if not cfg.gpu_runtime_check_enabled:
+        plan = decide_execution_plan(
+            model_name,
+            is_strong_model=is_strong_model,
+            context_length=context_length,
+            gpu_info=None,
+        )
+    else:
+        need_probe = cfg.gpu_policy == "require_gpu" or (
+            cfg.gpu_policy == "prefer_gpu" and is_strong_model
+        )
+        gpu_info = None
+        if need_probe:
+            try:
+                from jarvis.models.runtime_diagnostics import get_gpu_info
+
+                gpu_info, _warnings = get_gpu_info()
+            except Exception:  # noqa: BLE001
+                gpu_info = None
+        plan = decide_execution_plan(
+            model_name,
+            is_strong_model=is_strong_model,
+            context_length=context_length,
+            gpu_info=gpu_info,
+        )
+
+    if plan.blocked:
+        raise GPURequiredError(
+            plan.blocked_reason or "GPU execution required but unavailable.",
+            plan.suggested_action,
+        )
+
+    state["gpu_policy"] = plan.gpu_policy
+    state["processor_split"] = plan.processor_split
+    state["gpu_fallback_used"] = plan.gpu_fallback_used
+    state["cpu_fallback_used"] = plan.cpu_fallback_used
+    if plan.runtime_warning and not state.get("runtime_warning"):
+        state["runtime_warning"] = plan.runtime_warning
+    if plan.runtime_warning and not state.get("warning"):
+        state["warning"] = plan.runtime_warning
+
+    if plan.fallback_model:
+        logger.warning(
+            "GPU policy routed %s -> fallback %s (%s)",
+            model_name, plan.fallback_model, plan.processor_split,
+        )
+        state["selected_model"] = plan.fallback_model
+        state["selection_reason"] = (
+            f"GPU policy: {model_name} cannot run on GPU; using {plan.fallback_model}"
+        )
+        return plan.fallback_model, plan
+    return model_name, plan
+
+
 def _tool_loop_capped(state: JarvisState) -> bool:
     """Return True (and set a final response) when the tool loop is at its cap.
 
@@ -224,7 +295,14 @@ def run_general_branch(state: JarvisState) -> JarvisState:
     state["selected_model"] = model_name
     state["selection_reason"] = f"general branch using {model_name}"
 
-    llm = get_model_named(model_name, intent="general").bind_tools(GENERAL_BOUND_TOOLS)
+    model_name, plan = _apply_gpu_plan(
+        state,
+        model_name,
+        is_strong_model=(model_name == settings.strong_local_model),
+        context_length=settings.ollama_context_length,
+    )
+
+    llm = get_model_named(model_name, intent="general", num_gpu=plan.num_gpu).bind_tools(GENERAL_BOUND_TOOLS)
     response = _invoke_branch_llm(
         state,
         branch="general",
@@ -275,7 +353,14 @@ def run_coding_branch(state: JarvisState) -> JarvisState:
     state["selected_model"] = model_name
     state["selection_reason"] = f"coding branch using {model_name}"
 
-    llm = get_model_named(model_name, intent="coding").bind_tools(CODING_BOUND_TOOLS)
+    model_name, plan = _apply_gpu_plan(
+        state,
+        model_name,
+        is_strong_model=(model_name == settings.strong_local_model),
+        context_length=settings.ollama_context_length,
+    )
+
+    llm = get_model_named(model_name, intent="coding", num_gpu=plan.num_gpu).bind_tools(CODING_BOUND_TOOLS)
     response = _invoke_branch_llm(
         state,
         branch="coding",
@@ -311,10 +396,28 @@ def run_complex_branch(state: JarvisState) -> JarvisState:
     state["selected_model"] = primary
     state["selection_reason"] = "complex branch -> cloud chain"
 
+    # Phase 6 :: cloud-cost approval gate. When CLOUD_REQUIRE_COST_APPROVAL is
+    # on (and the cloud is actually configured), the branch pauses for
+    # explicit permission before spending. On resume (approved=True) the gate
+    # is skipped and the call proceeds.
+    if _cloud_approval_needed(state, messages, primary):
+        _stamp_cloud_approval(state, messages, primary)
+        logger.warning(
+            "Cloud-cost approval required for %s on session %s",
+            primary, state.get("session_id", "?"),
+        )
+        return state
+
     try:
-        text, model_used = run_complex_with_fallback(messages)
+        text, model_used = run_complex_with_fallback(
+            messages, session_id=state.get("session_id")
+        )
         state["selected_model"] = model_used
         state["final_response"] = text
+        state["cloud_used"] = True
+        state["estimated_cost_usd"] = (
+            estimate_prompt_cost_usd(model_used, messages)
+        )
         logger.info("Complex branch completed with model: %s", model_used)
     except Exception:  # noqa: BLE001
         state["fallback_count"] = state.get("fallback_count", 0) + 1
@@ -336,3 +439,43 @@ def run_complex_branch(state: JarvisState) -> JarvisState:
         return run_general_branch(state)
 
     return state
+
+
+def _cloud_approval_needed(state: JarvisState, messages: list, model: str) -> bool:
+    """True when the cloud call must pause for explicit cost approval."""
+    if state.get("approved"):
+        return False
+    if not settings.cloud_require_cost_approval:
+        return False
+    if not settings.cloud_cost_tracking_enabled:
+        return False
+    if not settings.openrouter_api_key or not settings.complex_models:
+        return False
+    return True
+
+
+def _stamp_cloud_approval(state: JarvisState, messages: list, model: str) -> None:
+    """Set the approval fields so the API layer pauses and can resume."""
+    import uuid
+    from datetime import datetime, timedelta, timezone
+
+    est = estimate_prompt_cost_usd(model, messages)
+    state["approval_required"] = True
+    state["pending_action"] = (
+        f"cloud_call: {model} (est. ${est:.4f})"
+    )
+    state["pending_tool_calls"] = [
+        {"name": "cloud_call", "args": {"model": model, "estimated_cost_usd": round(est, 6)}}
+    ]
+    state["estimated_cost_usd"] = est
+    state["cloud_used"] = True
+    state["approval_id"] = uuid.uuid4().hex
+    ttl = max(60, getattr(settings, "approval_ttl_seconds", 600))
+    state["approval_expires_at"] = (
+        datetime.now(timezone.utc) + timedelta(seconds=ttl)
+    ).isoformat()
+    state["final_response"] = (
+        f"I'd like to make a cloud API call to `{model}` (est. ${est:.4f}).\n"
+        f"Approval '{(state['approval_id'])[:8]}…' expires in {ttl}s. "
+        "Reply with approval to continue."
+    )

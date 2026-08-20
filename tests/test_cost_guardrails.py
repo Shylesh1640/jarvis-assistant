@@ -92,7 +92,7 @@ def test_openrouter_refuses_when_budget_tripped(monkeypatch):
     g = CostGuard(max_prompt_tokens=0, daily_budget_usd=0.01)
     g._spent_today = 1.0  # force over-budget with a fresh guard
     monkeypatch.setattr(orc, "get_cost_guard", lambda: g)
-    monkeypatch.setattr(orc, "_post_chat", MagicMock(return_value="text"))
+    monkeypatch.setattr(orc, "_post_chat", MagicMock(return_value=("text", {"prompt_tokens": 100, "completion_tokens": 10})))
     with pytest.raises(CloudBudgetExceededError):
         orc.run_complex_with_fallback(_MSGS)
     orc._post_chat.assert_not_called()
@@ -106,7 +106,7 @@ def test_openrouter_refuses_oversized_prompt(monkeypatch):
     )
     g = CostGuard(max_prompt_tokens=5, daily_budget_usd=0.0)
     monkeypatch.setattr(orc, "get_cost_guard", lambda: g)
-    monkeypatch.setattr(orc, "_post_chat", MagicMock(return_value="text"))
+    monkeypatch.setattr(orc, "_post_chat", MagicMock(return_value=("text", {"prompt_tokens": 100, "completion_tokens": 10})))
     with pytest.raises(CloudPromptTooLargeError):
         orc.run_complex_with_fallback(_MSGS)
     orc._post_chat.assert_not_called()
@@ -120,7 +120,7 @@ def test_openrouter_success_records_cost(monkeypatch):
     )
     g = CostGuard(max_prompt_tokens=0, daily_budget_usd=0.0)
     monkeypatch.setattr(orc, "get_cost_guard", lambda: g)
-    monkeypatch.setattr(orc, "_post_chat", MagicMock(return_value="cloud answer"))
+    monkeypatch.setattr(orc, "_post_chat", MagicMock(return_value=("cloud answer", {"prompt_tokens": 100, "completion_tokens": 10})))
     text, model = orc.run_complex_with_fallback(_MSGS)
     assert text == "cloud answer"
     assert model == "openai/gpt-5.5"

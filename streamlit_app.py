@@ -179,6 +179,27 @@ def _runtime_mode_summary(snap: dict | None) -> dict:
     }
 
 
+def _gpu_policy_summary(snap: dict | None) -> dict:
+    """Pure helper: GPU execution-policy display lines for the sidebar.
+
+    Returns {"available": bool, "policy": str, "lines": list[str]} with the
+    safe-GPU policy state so the UI can surface how models are allowed to
+    run (never claims the live processor split — that's the /runtime
+    ``processor`` field).
+    """
+    pol = ((snap or {}).get("gpu_policy") or {}) if snap else {}
+    if not pol:
+        return {"available": False, "policy": "prefer_gpu", "lines": []}
+    lines = [
+        f"Policy: `{pol.get('policy', 'prefer_gpu')}`",
+        f"CPU fallback: {'allowed' if pol.get('allow_cpu_fallback') else 'blocked'}",
+        f"VRAM cap: {pol.get('max_vram_percent')}% · min free: {pol.get('min_free_vram_mb')} MB",
+        f"Strong-model partial offload: {'allowed' if pol.get('strong_model_allow_partial_offload') else 'not allowed'}",
+        f"Runtime pre-checks: {'on' if pol.get('runtime_check_enabled') else 'off'}",
+    ]
+    return {"available": True, "policy": pol.get("policy", "prefer_gpu"), "lines": lines}
+
+
 def export_conversation_to_markdown(messages: list[dict]) -> str:
     """Serialise the conversation to a Markdown string."""
     lines = ["# Jarvis Conversation Export\n"]
@@ -886,6 +907,14 @@ with st.sidebar:
     else:
         st.caption("Runtime mode unavailable (backend /runtime not reachable).")
 
+    st.subheader("GPU policy", divider=False)
+    gp_sum = _gpu_policy_summary(st.session_state.runtime_snap)
+    if gp_sum["available"]:
+        for line in gp_sum["lines"]:
+            st.caption(line)
+    else:
+        st.caption("GPU policy unavailable (backend /runtime not reachable).")
+
     st.subheader("RAG store", divider=False)
     count = fetch_doc_count()
     if count is None:
@@ -961,10 +990,16 @@ with st.sidebar:
                 color = "red" if err else ("orange" if approval == "required" else "green")
                 label = f"{t.get('intent') or '—'}/{path}"
                 st.badge(label, color=color)
+                gpu_policy = t.get("gpu_policy") or "-"
+                split = t.get("processor_split") or "-"
+                cost = t.get("estimated_cost_usd", 0.0)
+                cloud = "cloud" if t.get("cloud_used") else "local"
                 st.caption(
                     f"`{t.get('request_id', '')[:8]}…` {model} · {duration:.0f}ms · "
-                    f"approval={approval}"
+                    f"approval={approval} · {gpu_policy}/{split} · {cloud}"
                 )
+                if cost > 0:
+                    st.caption(f":material/paid: estimated cost ${cost:.4f}")
                 if err:
                     st.caption(f":material/error: {err}")
                 st.divider()

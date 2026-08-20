@@ -16,14 +16,10 @@ import pytest
 def runtime_summary_module() -> types.ModuleType:
     src = Path("streamlit_app.py").read_text(encoding="utf-8")
     tree = ast.parse(src)
-    fn = None
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name == "_runtime_mode_summary":
-            fn = node
-            break
-    assert fn is not None, "_runtime_mode_summary not found in streamlit_app.py"
+    fns = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ("_runtime_mode_summary", "_gpu_policy_summary")]
+    assert any(n.name == "_runtime_mode_summary" for n in fns), "_runtime_mode_summary not found in streamlit_app.py"
     module = types.ModuleType("streamlit_app")
-    exec(compile(ast.Module(body=[fn], type_ignores=[]), "streamlit_app.py", "exec"), module.__dict__)
+    exec(compile(ast.Module(body=fns, type_ignores=[]), "streamlit_app.py", "exec"), module.__dict__)
     return module
 
 
@@ -102,3 +98,35 @@ def test_summary_wsl_and_config_keys_present_only(runtime_summary_module):
     assert out["wsl_config_keys"] == ["memory"]
     assert "8GB" not in str(out)
     assert "processors" not in out["wsl_config_keys"]
+
+
+# ---------------------------------------------------------------------------
+# GPU policy summary helper
+# ---------------------------------------------------------------------------
+
+
+def test_gpu_policy_summary_unavailable_when_missing(runtime_summary_module):
+    out = runtime_summary_module._gpu_policy_summary(None)
+    assert out["available"] is False
+    out = runtime_summary_module._gpu_policy_summary({})
+    assert out["available"] is False
+
+
+def test_gpu_policy_summary_reports_policy(runtime_summary_module):
+    out = runtime_summary_module._gpu_policy_summary(
+        {
+            "gpu_policy": {
+                "policy": "require_gpu",
+                "allow_cpu_fallback": False,
+                "max_vram_percent": 95.0,
+                "min_free_vram_mb": 512,
+                "strong_model_allow_partial_offload": False,
+                "runtime_check_enabled": True,
+            }
+        }
+    )
+    assert out["available"] is True
+    assert out["policy"] == "require_gpu"
+    joined = "\n".join(out["lines"])
+    assert "CPU fallback: blocked" in joined
+    assert "min free: 512 MB" in joined

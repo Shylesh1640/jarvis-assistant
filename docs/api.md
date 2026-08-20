@@ -172,7 +172,30 @@ Look up (creating if needed) the session and return its bearer token:
 { "session_id": "abc123", "session_token": "tok-…" }
 ```
 
-The token is per-session and stable across restarts (persisted in the DB).
+Tokens are per-session and **hashed at rest** (`SESSION_TOKEN_HASH_SCHEME`,
+default argon2). Within the process lifetime the same token is returned for
+the session; after a backend restart the plaintext is gone and the token
+rotates automatically — re-fetch it. Token lifecycle metadata is included in
+`GET /sessions/{session_id}` (`token_status`, `token_created_at`,
+`token_expires_at`, `token_rotated_at`, `token_revoked_at`).
+
+### `POST /sessions/{session_id}/rotate-token`
+
+Explicitly rotate the session token (immediately invalidates the old one).
+Returns the new token:
+
+```json
+{ "session_id": "abc123", "session_token": "tok-new", "previous_token_revoked": true }
+```
+
+### `POST /sessions/{session_id}/revoke`
+
+Revoke the session token; it is rejected with `403 invalid_session_token`
+until a new one is issued via `GET /sessions/{session_id}/token`:
+
+```json
+{ "session_id": "abc123", "revoked": true }
+```
 
 ### `GET /sessions/{session_id}`
 
@@ -185,6 +208,11 @@ Session metadata:
   "created_at": "…",
   "last_active_at": "…",
   "has_token": true,
+  "token_status": "active",
+  "token_created_at": "…",
+  "token_expires_at": "…",
+  "token_rotated_at": null,
+  "token_revoked_at": null,
   "message_count": 12
 }
 ```
@@ -317,24 +345,29 @@ Clear all feedback. Returns `{ "cleared": 3 }`.
 
 ### `GET /cost`
 
-Estimated cloud-spend snapshot (prompt-only estimate, not an invoice):
+Estimated cloud-spend snapshot (prompt-based estimate, not an invoice):
 
 ```json
-{ "day": "2026-08-18", "spent_today_usd": 0.0042, "daily_budget_usd": 1.0, "max_prompt_tokens": 0, "calls_today": 1, "recent_calls": [ { "day": "2026-08-18", "model": "openai/gpt-5.5", "cost_usd": 0.0042 } ] }
+{ "day": "2026-08-18", "spent_today_usd": 0.0042, "daily_budget_usd": 1.0, "max_prompt_tokens": 0, "request_cost_cap_usd": 0.25, "session_cost_cap_usd": 2.0, "require_cost_approval": true, "cost_tracking_enabled": true, "calls_today": 1, "persisted_today_usd": 0.0042, "persisted_calls_today": 1, "recent_calls": [ { "day": "2026-08-18", "model": "openai/gpt-5.5", "cost_usd": 0.0042 } ] }
 ```
 
-The guard refuses cloud calls when `CLOUD_MAX_PROMPT_TOKENS` or
-`CLOUD_DAILY_BUDGET_USD` is exceeded; the complex branch falls back to
-local models.
+Guardrails (all typed errors; the complex branch falls back to local models):
+`CLOUD_MAX_PROMPT_TOKENS` (oversized prompts), `CLOUD_DAILY_BUDGET_USD`
+(daily budget), `CLOUD_MAX_REQUEST_COST_USD` (per-request estimate),
+`CLOUD_MAX_SESSION_COST_USD` (per-session cumulative). With
+`CLOUD_REQUIRE_COST_APPROVAL=true` the complex branch pauses with a
+`cloud_call` pending action and an estimated cost; it resumes only when the
+request is re-sent with `approved=true`.
 
 ## Observability
 
 ### `GET /traces/recent?limit=50`
 
-Most recent entries from the in-memory trace registry:
+Most recent entries from the in-memory trace registry (bounded by
+`TRACE_RETENTION_LIMIT`, default 256):
 
 ```json
-{ "traces": [ { "trace_id": "tr-…", "session_id": "abc123", "events": […], "durations_ms": {…} } ] }
+{ "traces": [ { "request_id": "…", "session_id": "abc123", "timestamp": "…", "intent": "coding", "complexity": "medium", "selected_model": "qwen2.5-coder:7b", "path_used": "coding", "tools_used": ["search_code"], "risk_level": "low", "approval_status": "not_required", "duration_ms": 1234, "fallback_used": false, "gpu_policy": "prefer_gpu", "processor_split": "100% GPU", "estimated_cost_usd": 0.0, "cloud_used": false, "error": null } ] }
 ```
 
 The registry is bounded and in-memory — restarting the backend clears it.
@@ -378,6 +411,7 @@ the HTTP `Retry-After` header.
 | 503 | `ollama_unavailable` | Ollama unreachable |
 | 504 | `request_timeout` | Local model timed out |
 | 507 | `out_of_memory` | Model + context > VRAM/RAM |
+| 507 | `gpu_required` | `GPU_POLICY=require_gpu` and the model can't run fully on GPU; `suggested_action` tells you what to change |
 
 ## Authentication
 
@@ -385,7 +419,11 @@ With `REQUIRE_SESSION_TOKEN=false` (default) `session_token` is optional —
 used only to label the session. With it `true`, `POST /chat` and `POST /tasks`
 require a valid token for the given `session_id`; cross-session replay yields
 `403 invalid_session_token`. Tokens come from `GET /sessions/{session_id}/token`
-and are per-session only.
+and are per-session only. Tokens are stored hashed at rest (argon2/bcrypt/
+pbkdf2), expire after `SESSION_TOKEN_TTL_HOURS`, rotate passively at
+`SESSION_TOKEN_ROTATION_HOURS` (and after any backend restart), and can be
+rotated (`POST /sessions/{id}/rotate-token`) or revoked
+(`POST /sessions/{id}/revoke`) explicitly.
 
 ## Rate limiting
 

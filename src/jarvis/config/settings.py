@@ -249,9 +249,92 @@ class Settings(BaseSettings):
     # Polling interval (seconds) for the background file watcher when enabled.
     auto_reindex_interval: int = 300
 
+    # --- Phase 6 :: GPU benchmark / load-test framework ---
+    # Hard wall-clock cap for a single benchmark generation (seconds). A run
+    # that exceeds it is recorded as a timeout failure instead of hanging.
+    benchmark_max_latency_seconds: int = 60
+    # Thresholds recorded (never fail the run) unless set to 0 (disabled).
+    benchmark_min_gpu_utilization_percent: float = 1.0
+    benchmark_max_cpu_ram_mb: int = 16000
+    benchmark_max_vram_percent: float = 95.0
+    # Comma-separated context sizes the benchmark suite exercises by default.
+    benchmark_context_sizes: str = "4096,6144,8192"
+    # Directory for benchmark JSON / markdown reports and baselines.
+    benchmark_output_dir: str = "./reports"
+
+    # --- Phase 6 :: safe GPU execution policy ---
+    # Allowed: "prefer_gpu" | "require_gpu" | "allow_cpu".
+    #   prefer_gpu — prefer full GPU; allow controlled partial offload or
+    #                explicit CPU fallback only when the flags below permit,
+    #                always surfaced in metadata/logs.
+    #   require_gpu — refuse to run on CPU; a model that cannot load fully on
+    #                 the GPU returns a structured GPU-capacity error.
+    #   allow_cpu — CPU fallback allowed but always visible in metadata/logs.
+    gpu_policy: str = "prefer_gpu"
+    # Whether a model that cannot fit fully in VRAM may retry with a partial
+    # or CPU offload (subject to the policy above).
+    gpu_allow_cpu_fallback: bool = True
+    # When True, "require_gpu" additionally demands 100% GPU offload (no
+    # partial CPU/GPU at all). When False, require_gpu accepts any offload
+    # that includes the GPU.
+    gpu_require_full_offload: bool = False
+    # VRAM usage cap (percent of total) above which a model is considered to
+    # exceed available GPU memory. 0 disables the VRAM pre-check.
+    gpu_max_vram_percent: float = 95.0
+    # Minimum free VRAM (MB) required before a model is loaded. 0 disables.
+    gpu_min_free_vram_mb: int = 512
+    # Whether the strong local model is allowed to run partially offloaded
+    # (CPU/GPU) when it exceeds VRAM. False = it must fit fully or be routed
+    # to a fallback / background task / structured warning.
+    gpu_strong_model_allow_partial_offload: bool = False
+    # Whether the GPU policy runs the runtime/VRAM pre-checks at all.
+    gpu_runtime_check_enabled: bool = True
+
+    # --- Phase 6 :: session-token security ---
+    # Lifetime of a session token before it expires (hours). 0 = never expire.
+    session_token_ttl_hours: int = 168
+    # After how long a still-valid token should be rotated (hours). 0 = no
+    # automatic rotation prompt (rotation still available via API).
+    session_token_rotation_hours: int = 72
+    # Hash scheme for session tokens at rest: "argon2" | "bcrypt" | "pbkdf2".
+    # argon2 is preferred; bcrypt and pbkdf2 are accepted fallbacks.
+    session_token_hash_scheme: str = "argon2"
+
+    # --- Phase 6 :: cloud cost tracking + budgets ---
+    # Master switch for persistent cloud-usage records + budgets.
+    cloud_cost_tracking_enabled: bool = True
+    # When True, cloud calls need explicit approval before spending.
+    cloud_require_cost_approval: bool = True
+    # Max estimated cost (USD) for a single cloud call. 0 = unlimited.
+    cloud_max_request_cost_usd: float = 0.25
+    # Max estimated cost (USD) per session. 0 = unlimited.
+    cloud_max_session_cost_usd: float = 2.00
+    # Path to the model pricing config (JSON). See config/model_pricing.json.
+    cloud_pricing_config_path: str = "./config/model_pricing.json"
+
+    # --- Phase 6 :: observability / trace retention ---
+    # Max in-memory traces retained for GET /traces/recent.
+    trace_retention_limit: int = 256
+
     @property
     def complex_models(self) -> list[str]:
         return [m.strip() for m in self.complex_model_chain.split(",") if m.strip()]
+
+    @property
+    def benchmark_context_sizes_list(self) -> list[int]:
+        """Context sizes the benchmark suite should exercise (BENCHMARK_CONTEXT_SIZES)."""
+        out: list[int] = []
+        for part in self.benchmark_context_sizes.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                value = int(part)
+            except ValueError:
+                continue
+            if value > 0 and value not in out:
+                out.append(value)
+        return out or [4096]
 
     # ------------------------------------------------------------------
     # Phase 5 :: backward-compatible resolvers for the RAG quality knobs.
@@ -394,6 +477,33 @@ def validate_runtime_settings(s: "Settings | None" = None) -> list[str]:
             "RUNTIME_MODE=docker expects POSTGRES_DSN; with it empty the app falls "
             "back to SQLite (still works without Docker)."
         )
+    if s.gpu_policy not in ("prefer_gpu", "require_gpu", "allow_cpu"):
+        warnings.append(
+            f"GPU_POLICY='{s.gpu_policy}' is invalid; use 'prefer_gpu', 'require_gpu' or 'allow_cpu'."
+        )
+    if s.gpu_policy == "require_gpu" and s.gpu_require_full_offload and s.gpu_allow_cpu_fallback:
+        warnings.append(
+            "GPU_POLICY=require_gpu with GPU_REQUIRE_FULL_OFFLOAD=true conflicts with "
+            "GPU_ALLOW_CPU_FALLBACK=true (full-offload requirement makes CPU fallback "
+            "inaccessible)."
+        )
+    if not (0 <= s.gpu_max_vram_percent <= 100):
+        warnings.append("GPU_MAX_VRAM_PERCENT must be in [0, 100] (0 disables the VRAM check).")
+    if s.gpu_min_free_vram_mb < 0:
+        warnings.append("GPU_MIN_FREE_VRAM_MB must be >= 0.")
+    if s.benchmark_max_latency_seconds < 1:
+        warnings.append("BENCHMARK_MAX_LATENCY_SECONDS must be >= 1.")
+    if s.session_token_hash_scheme not in ("argon2", "bcrypt", "pbkdf2"):
+        warnings.append(
+            f"SESSION_TOKEN_HASH_SCHEME='{s.session_token_hash_scheme}' is invalid; "
+            "use 'argon2', 'bcrypt' or 'pbkdf2'."
+        )
+    if s.session_token_ttl_hours < 0:
+        warnings.append("SESSION_TOKEN_TTL_HOURS must be >= 0 (0 = never expire).")
+    if s.cloud_max_request_cost_usd < 0 or s.cloud_max_session_cost_usd < 0:
+        warnings.append("CLOUD_MAX_REQUEST_COST_USD / CLOUD_MAX_SESSION_COST_USD must be >= 0.")
+    if s.trace_retention_limit < 1:
+        warnings.append("TRACE_RETENTION_LIMIT must be >= 1.")
     return warnings
 
 

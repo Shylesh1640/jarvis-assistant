@@ -24,6 +24,7 @@ from jarvis.api.schemas.chat import ChatRequest, ChatResponse
 from jarvis.guardrails.input_guard import validate_input
 from jarvis.guardrails.output_guard import redact_output
 from jarvis.memory.summaries import maybe_summarize, maybe_summarize_evicted
+from jarvis.models.gpu_policy import GPURequiredError
 from jarvis.orchestration.approval_node import approval_is_expired
 from jarvis.orchestration.branches import (
     OllamaModelLoadError,
@@ -435,6 +436,16 @@ def _error_from_exception(exc: Exception, tr) -> APIError:
             retry_after_seconds=10,
             suggested_action="Try a shorter prompt or run it as a background task.",
         )
+    if isinstance(exc, GPURequiredError):
+        trace_event(tr, "error", category="gpu_required")
+        finish_trace(tr)
+        logger.warning("GPU required but unsatisfied: %s", exc)
+        return APIError(
+            507,
+            "gpu_required",
+            str(exc),
+            suggested_action=exc.suggested_action,
+        )
     trace_event(tr, "error", category="unknown")
     finish_trace(tr)
     logger.exception("Graph invocation failed")
@@ -480,4 +491,11 @@ def _build_response(session_id: str, result: dict) -> ChatResponse:
         fallback_used=bool(result.get("fallback_used")),
         warning=result.get("warning"),
         elapsed_seconds=result.get("elapsed_seconds"),
+        gpu_policy=result.get("gpu_policy"),
+        processor_split=result.get("processor_split"),
+        gpu_fallback_used=bool(result.get("gpu_fallback_used")),
+        cpu_fallback_used=bool(result.get("cpu_fallback_used")),
+        cloud_used=bool(result.get("cloud_used")),
+        estimated_cost_usd=result.get("estimated_cost_usd"),
+        runtime_warning=result.get("runtime_warning"),
     )

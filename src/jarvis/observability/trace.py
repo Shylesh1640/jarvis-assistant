@@ -22,6 +22,10 @@ A finished trace can be rendered as the documented JSON shape::
       "approval_status": "not_required",
       "duration_ms": 1234,
       "fallback_used": false,
+      "gpu_policy": "prefer_gpu",
+      "processor_split": "100% GPU",
+      "estimated_cost_usd": 0.0,
+      "cloud_used": false,
       "error": null
     }
 """
@@ -35,11 +39,31 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Deque
 
+from jarvis.config.settings import settings
+
 logger = logging.getLogger("jarvis.trace")
 
-# Cap to keep memory bounded under load.
-_MAX_TRACES = 256
-_recent: Deque["Trace"] = deque(maxlen=_MAX_TRACES)
+# Default cap if settings.trace_retention_limit is unavailable (e.g. early import).
+_DEFAULT_MAX_TRACES = 256
+_recent: Deque["Trace"] = deque(maxlen=_DEFAULT_MAX_TRACES)
+
+
+def _ring_maxlen() -> int:
+    """Resolve the configured in-memory trace retention limit."""
+    try:
+        limit = int(settings.trace_retention_limit)
+    except Exception:  # noqa: BLE001
+        limit = _DEFAULT_MAX_TRACES
+    return limit if limit >= 1 else _DEFAULT_MAX_TRACES
+
+
+def _ensure_capacity() -> None:
+    """Rebuild the ring buffer if the configured retention limit changed."""
+    global _recent
+    target = _ring_maxlen()
+    if _recent.maxlen != target:
+        kept = list(_recent)[-target:]
+        _recent = deque(kept, maxlen=target)
 
 
 @dataclass
@@ -59,6 +83,10 @@ class Trace:
     risk_level: str | None = None
     approval_status: str | None = None
     fallback_used: bool = False
+    gpu_policy: str | None = None
+    processor_split: str | None = None
+    estimated_cost_usd: float = 0.0
+    cloud_used: bool = False
     error: str | None = None
 
     @property
@@ -80,11 +108,16 @@ class Trace:
             "approval_status": self.approval_status,
             "duration_ms": round(self.duration_ms, 1),
             "fallback_used": self.fallback_used,
+            "gpu_policy": self.gpu_policy,
+            "processor_split": self.processor_split,
+            "estimated_cost_usd": round(float(self.estimated_cost_usd), 4),
+            "cloud_used": self.cloud_used,
             "error": self.error,
         }
 
 
 def new_trace(*, session_id: str, approved: bool = False) -> Trace:
+    _ensure_capacity()
     tr = Trace(session_id=session_id, approved=approved)
     _recent.append(tr)
     return tr
@@ -114,12 +147,17 @@ def finish_trace(tr: Trace, *, result: dict | None = None) -> None:
     tr.risk_level = result.get("risk_level")
     tr.approval_status = _approval_status_from(result, tr)
     tr.fallback_used = bool(result.get("fallback_used"))
+    tr.gpu_policy = result.get("gpu_policy")
+    tr.processor_split = result.get("processor_split")
+    tr.estimated_cost_usd = float(result.get("estimated_cost_usd") or 0.0)
+    tr.cloud_used = bool(result.get("cloud_used"))
     tr.error = result.get("error_state")
 
     approval = tr.approval_status or "not_required"
     logger.info(
         "trace | request=%s session=%s duration_ms=%.1f intent=%s complexity=%s "
-        "path=%s model=%s risk=%s approval=%s fallback=%s tools=%s error=%s",
+        "path=%s model=%s risk=%s approval=%s fallback=%s gpu_policy=%s "
+        "processor_split=%s cost_usd=%.4f cloud=%s tools=%s error=%s",
         tr.request_id,
         tr.session_id,
         tr.duration_ms,
@@ -130,6 +168,10 @@ def finish_trace(tr: Trace, *, result: dict | None = None) -> None:
         tr.risk_level,
         approval,
         tr.fallback_used,
+        tr.gpu_policy or "-",
+        tr.processor_split or "-",
+        tr.estimated_cost_usd,
+        tr.cloud_used,
         ",".join(tr.tools_used) or "-",
         tr.error or "-",
     )

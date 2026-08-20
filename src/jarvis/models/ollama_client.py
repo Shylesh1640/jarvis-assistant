@@ -62,8 +62,20 @@ def _runtime_options() -> dict:
     return opts
 
 
-def _build(model_name: str, temperature: float, *, force_cpu: bool = False, json_mode: bool = False) -> ChatOllama:
-    """Construct a ChatOllama with runtime options; model name authoritative."""
+def _build(
+    model_name: str,
+    temperature: float,
+    *,
+    force_cpu: bool = False,
+    json_mode: bool = False,
+    num_gpu: int | None = None,
+) -> ChatOllama:
+    """Construct a ChatOllama with runtime options; model name authoritative.
+
+    ``num_gpu`` overrides ``settings.ollama_num_gpu`` when provided (used by
+    the Phase 6 GPU policy to honour require/prefer/allow semantics). The
+    model name is never replaced by runtime options.
+    """
     opts = _runtime_options()
     opts["model"] = model_name
     opts["base_url"] = settings.ollama_base_url
@@ -73,6 +85,8 @@ def _build(model_name: str, temperature: float, *, force_cpu: bool = False, json
     if force_cpu:
         # num_gpu=0 disables GPU offload entirely (pure CPU fallback).
         opts["num_gpu"] = 0
+    elif num_gpu is not None:
+        opts["num_gpu"] = num_gpu
     return ChatOllama(**opts)
 
 
@@ -105,6 +119,7 @@ def get_model_named(
     temperature: float | None = None,
     *,
     force_cpu: bool = False,
+    num_gpu: int | None = None,
 ) -> ChatOllama:
     """Build a ChatOllama for an explicitly-chosen model name.
 
@@ -113,14 +128,16 @@ def get_model_named(
     based on the branch intent.
 
     Pass ``force_cpu=True`` to run with ``num_gpu=0`` (used by the graceful
-    GPU→CPU degradation path when the model doesn't fit in VRAM).
+    GPU→CPU degradation path when the model doesn't fit in VRAM), or
+    ``num_gpu`` from a Phase 6 ``GPUPlan`` to honour require/prefer/allow
+    semantics.
 
     The model name is the single source of truth for *which* model loads;
     runtime options only tune context/batch/keep-alive and never replace
     the model.
     """
     temp = temperature if temperature is not None else _TEMPERATURE_BY_INTENT.get(intent, 0.4)
-    return _build(model_name, temp, force_cpu=force_cpu)
+    return _build(model_name, temp, force_cpu=force_cpu, num_gpu=num_gpu)
 
 
 __all__ = [

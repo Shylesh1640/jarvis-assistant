@@ -26,6 +26,13 @@ _DEFAULTS = dict(
     coding_model="qwen2.5-coder:7b-q5_K_M",
     coding_model_small="qwen2.5-coder:7b-q5_K_M",
     use_strong_local=True,
+    # Phase 6 GPU policy pinned so model-selection tests never probe a real
+    # GPU or route the strong model to a fallback.
+    gpu_policy="prefer_gpu",
+    gpu_runtime_check_enabled=False,
+    # Cloud-cost approval disabled so complex-branch tests exercise the
+    # cloud call / fallback directly (the approval gate has its own tests).
+    cloud_require_cost_approval=False,
     # Backing field for the `complex_models` property (comma-separated).
     complex_model_chain="anthropic/claude-opus-4.1",
 )
@@ -132,7 +139,7 @@ def test_complex_branch_uses_cloud_chain(configured_settings, monkeypatch):
     state = _state("design an AI-powered traffic light system",
                    intent="complex", complexity="difficult")
 
-    def _fake_run(messages):
+    def _fake_run(messages, session_id=None):
         return ("[cloud response]", "anthropic/claude-opus-4.1")
 
     monkeypatch.setattr(branches_mod, "run_complex_with_fallback", _fake_run)

@@ -15,12 +15,14 @@ from sqlalchemy import desc, func, select
 from jarvis.persistence.engine import get_session
 from jarvis.persistence.models import (
     ApprovalRow,
+    CloudUsageRow,
     FeedbackRow,
     MessageRow,
     SessionRow,
     SummaryRow,
     TaskRow,
 )
+from jarvis.security.token_hasher import new_session_token, verify_token
 
 
 class SessionRepo:
@@ -66,34 +68,153 @@ class SessionRepo:
                 s.flush()
 
     def ensure_token(self, session_id: str, *, user_id: str | None = None) -> str:
-        """Return the session's bearer token, creating the session if needed."""
+        """Return the session's bearer token, creating the session if needed.
+
+        The token is stored *hashed* at rest; the plaintext is kept only in
+        the process-local issuance cache so a repeated ``GET
+        /sessions/{id}/token`` returns the same token. After a backend
+        restart the plaintext is gone and the token is rotated (the old
+        token — still validated by its hash — stops being returned).
+        Legacy plaintext tokens from pre-Phase 6 rows are lazily hashed on
+        first touch and their plaintext cleared.
+        """
         from datetime import datetime, timezone
 
+        now = datetime.now(timezone.utc)
         with get_session() as s:
             row = s.get(SessionRow, session_id)
             if row is None:
                 row = SessionRow(
                     id=session_id,
                     user_id=user_id,
-                    token=_new_token(),
-                    last_active_at=datetime.now(timezone.utc),
+                    last_active_at=now,
                 )
                 s.add(row)
                 s.flush()
-            if not row.token:
-                row.token = _new_token()
-                s.flush()
-            return row.token
+            if row.token and not row.token_hash:
+                # Lazy migration of a legacy plaintext token.
+                self._persist_token(row, row.token, s, now=now)
+            cached = _token_cache.get(session_id)
+            if cached:
+                return cached
+            token = new_session_token()
+            self._persist_token(row, token, s, now=now)
+            _token_cache.set(session_id, token)
+            return token
 
     def is_token_valid(self, session_id: str, token: str | None) -> bool:
-        """True when *token* matches the stored token for *session_id*."""
+        """True when *token* matches the stored token for *session_id*.
+
+        Enforces revocation and absolute expiry; verifies against the hash
+        (or, during the one-time lazy migration, the legacy plaintext).
+        """
+        from datetime import datetime, timezone
+
         if not token:
             return False
+        now = datetime.now(timezone.utc)
         with get_session() as s:
             row = s.get(SessionRow, session_id)
-            if row is None or not row.token:
+            if row is None:
                 return False
-            return token == row.token
+            if row.token_revoked_at is not None:
+                return False
+            if row.token_expires_at is not None and _aware(row.token_expires_at) < now:
+                return False
+            stored = row.token_hash or row.token
+            if not stored:
+                return False
+            if not verify_token(token, stored):
+                return False
+            if row.token and not row.token_hash:
+                self._persist_token(row, token, s, now=now)
+            _token_cache.set(session_id, token)
+            return True
+
+    def rotate_token(self, session_id: str) -> str | None:
+        """Force a new token for *session_id* (old one stops validating).
+
+        Returns the new plaintext, or None when the session does not exist.
+        """
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc)
+        with get_session() as s:
+            row = s.get(SessionRow, session_id)
+            if row is None:
+                return None
+            token = new_session_token()
+            self._persist_token(row, token, s, now=now)
+            _token_cache.set(session_id, token)
+            return token
+
+    def revoke_token(self, session_id: str) -> bool:
+        """Revoke the session's token (it stops validating immediately)."""
+        from datetime import datetime, timezone
+
+        with get_session() as s:
+            row = s.get(SessionRow, session_id)
+            if row is None:
+                return False
+            row.token_revoked_at = datetime.now(timezone.utc)
+            s.flush()
+            _token_cache.remove(session_id)
+            return True
+
+    def token_status(self, session_id: str) -> dict | None:
+        """Structured token metadata for the UI (never the token itself)."""
+        from datetime import datetime, timedelta, timezone
+
+        from jarvis.config.settings import settings
+
+        row = self.get(session_id)
+        if row is None:
+            return None
+        now = datetime.now(timezone.utc)
+        expires = row.token_expires_at
+        rotated = row.token_rotated_at
+        rotation_hours = settings.session_token_rotation_hours
+        rotation_due = (
+            rotated is not None
+            and rotation_hours > 0
+            and _aware(rotated) + timedelta(hours=rotation_hours) <= now
+        )
+        return {
+            "has_token": bool(row.token_hash or row.token),
+            "hash_scheme": row.token_hash_scheme or ("plaintext" if row.token else None),
+            "created_at": _iso(row.token_created_at),
+            "expires_at": _iso(expires),
+            "rotated_at": _iso(rotated),
+            "revoked_at": _iso(row.token_revoked_at),
+            "expired": expires is not None and _aware(expires) < now,
+            "rotation_due": rotation_due,
+        }
+
+    def _persist_token(self, row: SessionRow, token: str, s, *, now) -> None:
+        """Hash *token* into the row and clear any legacy plaintext."""
+        from jarvis.config.settings import settings
+        from jarvis.security.token_hasher import hash_token
+
+        scheme = settings.session_token_hash_scheme
+        row.token_hash = hash_token(token, scheme)
+        row.token_hash_scheme = scheme
+        row.token_created_at = now
+        row.token_rotated_at = now
+        row.token_expires_at = self._expiry(now)
+        row.token_revoked_at = None
+        row.token = None
+        s.flush()
+
+    @staticmethod
+    def _expiry(now) -> object | None:
+        from datetime import timedelta
+
+        from jarvis.config.settings import settings
+
+        ttl = settings.session_token_ttl_hours
+        if ttl > 0:
+            return now + timedelta(hours=ttl)
+        return None
 
     def message_count(self, session_id: str) -> int:
         """Number of messages stored for *session_id* (for session metadata)."""
@@ -126,8 +247,56 @@ class SessionRepo:
             ).all()
             for row in rows:
                 s.delete(row)
+                _token_cache.remove(row.id)
             s.flush()
             return len(rows)
+
+
+def _iso(value) -> str | None:
+    return value.isoformat() if value else None
+
+
+def _aware(value) -> object:
+    """Normalise a datetime possibly returned naive (SQLite) to UTC-aware."""
+    from datetime import timezone
+
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
+class _TokenCache:
+    """Process-local plaintext-token cache.
+
+    Bounded (drops everything on overflow — rare for a local assistant) and
+    thread-safe. The DB only ever holds hashes; the plaintext lives here so
+    ``GET /sessions/{id}/token`` can re-return the current token within the
+    process lifetime. On restart the cache is empty and the token rotates.
+    """
+
+    def __init__(self, max_size: int = 2000) -> None:
+        import threading
+
+        self._data: dict[str, str] = {}
+        self._lock = threading.Lock()
+        self._max = max_size
+
+    def get(self, session_id: str) -> str | None:
+        with self._lock:
+            return self._data.get(session_id)
+
+    def set(self, session_id: str, token: str) -> None:
+        with self._lock:
+            if len(self._data) >= self._max:
+                self._data.clear()
+            self._data[session_id] = token
+
+    def remove(self, session_id: str) -> None:
+        with self._lock:
+            self._data.pop(session_id, None)
+
+
+_token_cache = _TokenCache()
 
 
 def _new_token() -> str:
@@ -639,6 +808,83 @@ class FeedbackRepo:
             return len(rows)
 
 
+class CloudUsageRepo:
+    """Persistent cloud-spend records (Phase 6)."""
+
+    def add(
+        self,
+        *,
+        day: str,
+        session_id: str | None,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        estimated_cost_usd: float,
+    ) -> int:
+        with get_session() as s:
+            row = CloudUsageRow(
+                day=day,
+                session_id=session_id,
+                model=model,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                estimated_cost_usd=estimated_cost_usd,
+            )
+            s.add(row)
+            s.flush()
+            return row.id
+
+    def sum_for_session(self, session_id: str) -> float:
+        with get_session() as s:
+            return float(
+                s.scalar(
+                    select(func.sum(CloudUsageRow.estimated_cost_usd)).where(
+                        CloudUsageRow.session_id == session_id
+                    )
+                )
+                or 0.0
+            )
+
+    def sum_for_day(self, day: str) -> float:
+        with get_session() as s:
+            return float(
+                s.scalar(
+                    select(func.sum(CloudUsageRow.estimated_cost_usd)).where(
+                        CloudUsageRow.day == day
+                    )
+                )
+                or 0.0
+            )
+
+    def count_for_day(self, day: str) -> int:
+        with get_session() as s:
+            return s.scalar(
+                select(func.count())
+                .select_from(CloudUsageRow)
+                .where(CloudUsageRow.day == day)
+            ) or 0
+
+    def recent(self, limit: int = 50) -> list[dict]:
+        with get_session() as s:
+            rows = s.scalars(
+                select(CloudUsageRow)
+                .order_by(desc(CloudUsageRow.id))
+                .limit(limit)
+            ).all()
+            return [
+                {
+                    "day": r.day,
+                    "session_id": r.session_id,
+                    "model": r.model,
+                    "prompt_tokens": r.prompt_tokens,
+                    "completion_tokens": r.completion_tokens,
+                    "estimated_cost_usd": round(r.estimated_cost_usd, 6),
+                    "created_at": _iso(r.created_at),
+                }
+                for r in rows
+            ]
+
+
 class _Repos:
     sessions = SessionRepo()
     messages = MessageRepo()
@@ -646,6 +892,7 @@ class _Repos:
     approvals = ApprovalRepo()
     tasks = TaskRepo()
     feedback = FeedbackRepo()
+    cloud_usage = CloudUsageRepo()
 
 
 repos = _Repos
@@ -658,5 +905,6 @@ __all__ = [
     "SummaryRepo",
     "ApprovalRepo",
     "TaskRepo",
+    "CloudUsageRepo",
     "repos",
 ]

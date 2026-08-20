@@ -20,6 +20,9 @@ dependencies = [
     "sqlalchemy>=2.0,<3",
     "streamlit>=1.59.1",
     "uvicorn[standard]>=0.51.0",
+    "bcrypt>=5.0.0",
+    "argon2-cffi>=25.1.0",
+    "psutil>=7.2.2",
 ]
 
 [build-system]
@@ -33,6 +36,8 @@ packages = ["src/jarvis"]
 jarvis-ingest = "jarvis.cli.ingest:main"
 jarvis-validate-runtime = "jarvis.cli.validate_runtime:main"
 jarvis-evaluate = "jarvis.cli.evaluate:main"
+jarvis-benchmark = "jarvis.benchmark.cli:main"
+jarvis-evaluate-performance = "jarvis.benchmark.performance:main"
 
 [dependency-groups]
 dev = [

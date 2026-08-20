@@ -29,6 +29,27 @@ class SessionRow(Base):
     # Per-session bearer token used to prevent cross-session access when
     # ``settings.require_session_token`` is enabled.
     token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Phase 6 :: token security. The token is stored *hashed* at rest
+    # (token_hash + scheme); `token` holds a legacy plaintext only until the
+    # one-time lazy migration on first successful validation. The plaintext
+    # is kept in memory (issuance cache) so GET /sessions/{id}/token can
+    # re-return it within the process lifetime; after a restart it rotates.
+    token_hash: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    token_hash_scheme: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    token_created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Absolute expiry (SESSION_TOKEN_TTL_HOURS); None = never expires.
+    token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    token_rotated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Set when the token is revoked via POST /sessions/{id}/revoke.
+    token_revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     # Last activity so the UI can show which sessions are live and a future
     # cleanup job can expire dormant sessions.
@@ -161,4 +182,26 @@ class FeedbackRow(Base):
     # Context for review: which path/model produced the reply.
     path_used: Mapped[str | None] = mapped_column(String(32), nullable=True)
     model_used: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class CloudUsageRow(Base):
+    """Persistent cloud-spend record (Phase 6 cost tracking).
+
+    One row per completed cloud call; the cost is an estimate from the
+    pricing config + the response's real token usage. Used to enforce the
+    per-session and daily budgets across restarts and to power
+    ``GET /cost``.
+    """
+
+    __tablename__ = "cloud_usage"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # UTC date (YYYY-MM-DD) used for the daily-budget rollover.
+    day: Mapped[str] = mapped_column(String(10), index=True)
+    session_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    model: Mapped[str] = mapped_column(String(256))
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    estimated_cost_usd: Mapped[float] = mapped_column(default=0.0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

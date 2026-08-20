@@ -44,6 +44,15 @@ carries a `warning`. If it still fails:
 - free memory: `ollama ps` to confirm only one model is loaded
   (`OLLAMA_MAX_LOADED_MODELS=1` keeps it that way).
 
+### `507 gpu_required` — "GPU policy refuses CPU execution"
+
+With `GPU_POLICY=require_gpu` the request intentionally refuses to run on
+CPU when the model cannot run fully on GPU. `suggested_action` tells you the
+fix — typically: use a smaller model that fits VRAM, enable
+`GPU_STRONG_MODEL_ALLOW_PARTIAL_OFFLOAD=true`, or switch to
+`GPU_POLICY=prefer_gpu` / `allow_cpu` (which permit CPU execution). This is
+the policy working as designed — the app never silently downgrades to CPU.
+
 ### `504 request_timeout` — "took too long to respond"
 
 Long prompts / slow hardware. Retry works for transient stalls; for stable
@@ -94,6 +103,12 @@ GET /sessions/{session_id}/token
 send it as `session_token`. Tokens are per-session — a token from session A
 cannot be used against session B. The Streamlit UI fetches and sends it
 automatically (show **Trace/debug** for the sent token).
+
+Tokens are stored **hashed** at rest, so after a backend restart the
+previously issued token is gone and a **new** token is generated — if an old
+token stops working, re-fetch it via `GET /sessions/{id}/token`. Tokens also
+expire after `SESSION_TOKEN_TTL_HOURS` (default 168) and rotate at
+`SESSION_TOKEN_ROTATION_HOURS` (default 72).
 
 ### `404 session_not_found`
 
