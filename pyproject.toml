@@ -38,6 +38,10 @@ jarvis-validate-runtime = "jarvis.cli.validate_runtime:main"
 jarvis-evaluate = "jarvis.cli.evaluate:main"
 jarvis-benchmark = "jarvis.benchmark.cli:main"
 jarvis-evaluate-performance = "jarvis.benchmark.performance:main"
+jarvis-backup = "jarvis.cli.backup:main"
+jarvis-verify-backup = "jarvis.cli.backup:verify_latest_main"
+jarvis-admin = "jarvis.cli.admin:main"
+jarvis-db = "jarvis.cli.db:main"
 
 [dependency-groups]
 dev = [

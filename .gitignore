@@ -4,6 +4,7 @@ __pycache__/
 .env
 data/
 workspace/
+backups/
 *.log
 .pytest_cache/
 env/

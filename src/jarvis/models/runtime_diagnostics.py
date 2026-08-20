@@ -442,11 +442,19 @@ def get_runtime_snapshot() -> dict[str, Any]:
             "runtime_check_enabled": settings.gpu_runtime_check_enabled,
             "strong_local_model": settings.strong_local_model,
         },
+        "deployment": _deployment_capability_report(),
         "runtime": capabilities,
         "docker": docker_wsl["docker"],
         "wsl": docker_wsl["wsl"],
     }
     return snap
+
+
+def _deployment_capability_report() -> dict[str, Any]:
+    """Deployment capability report (no secrets). Lazy import to avoid cycles."""
+    from jarvis.config.deployment import deployment_capability_report
+
+    return deployment_capability_report()
 
 
 def _recommendations(

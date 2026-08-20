@@ -316,9 +316,61 @@ class Settings(BaseSettings):
     # Max in-memory traces retained for GET /traces/recent.
     trace_retention_limit: int = 256
 
+    # --- Phase 7 :: deployment profile ---
+    # One of: local | single_host | production. Drives safe defaults and
+    # validation (see jarvis.config.deployment). local = localhost-only dev;
+    # single_host = one private machine; production = hardened public-facing.
+    deployment_profile: str = "local"
+    # Host/port the FastAPI backend binds. Local defaults to loopback only.
+    jarvis_host: str = "127.0.0.1"
+    jarvis_port: int = 8000
+    # Comma-separated allowed browser origins for CORS. Empty = same-origin
+    # only (Streamlit talks to the backend server-side). "*" is rejected by
+    # production/single-host validation.
+    jarvis_allowed_origins: str = ""
+    # Comma-separated host header allowlist enforced by TrustedHostMiddleware.
+    jarvis_trusted_hosts: str = "localhost,127.0.0.1"
+    # When True, proxy headers (X-Forwarded-For/Host/Proto) are honoured.
+    # Only enable behind a trusted reverse proxy.
+    jarvis_behind_reverse_proxy: bool = False
+    # When True, HSTS is advertised and the app warns if a request arrives
+    # over plain HTTP (only meaningful in single_host/production).
+    jarvis_force_https: bool = False
+    # Debug mode (fastapi --reload style diagnostics). Forced to warn in
+    # production; keep off in production.
+    jarvis_debug: bool = False
+    # Whether GET /traces/recent (detailed per-request trace exposure) is
+    # enabled. Production validation flags it unless explicitly disabled.
+    jarvis_expose_traces: bool = True
+    # Backup tooling switch. Production validation requires it to be on.
+    jarvis_backup_enabled: bool = False
+    # Directory backups are written to (never auto-deleted).
+    backup_dir: str = "./backups"
+    # Include document source files in backups only when explicitly enabled
+    # (CLI flag --include-documents or this setting). Document metadata is
+    # always included in the vector store backup.
+    backup_include_documents: bool = False
+    # Retention guidance (days) shown by jarvis-admin/backup reports. Advisory
+    # only — the tooling never deletes old backups automatically.
+    backup_retention_days: int = 30
+
     @property
     def complex_models(self) -> list[str]:
         return [m.strip() for m in self.complex_model_chain.split(",") if m.strip()]
+
+    @property
+    def allowed_origins_list(self) -> list[str]:
+        """Parsed JARVIS_ALLOWED_ORIGINS (empty = same-origin only)."""
+        return [
+            o.strip() for o in self.jarvis_allowed_origins.split(",") if o.strip()
+        ]
+
+    @property
+    def trusted_hosts_list(self) -> list[str]:
+        """Parsed JARVIS_TRUSTED_HOSTS."""
+        return [
+            h.strip() for h in self.jarvis_trusted_hosts.split(",") if h.strip()
+        ]
 
     @property
     def benchmark_context_sizes_list(self) -> list[int]:
@@ -504,6 +556,12 @@ def validate_runtime_settings(s: "Settings | None" = None) -> list[str]:
         warnings.append("CLOUD_MAX_REQUEST_COST_USD / CLOUD_MAX_SESSION_COST_USD must be >= 0.")
     if s.trace_retention_limit < 1:
         warnings.append("TRACE_RETENTION_LIMIT must be >= 1.")
+    if s.jarvis_port < 1 or s.jarvis_port > 65535:
+        warnings.append("JARVIS_PORT must be in [1, 65535].")
+    if not s.jarvis_host:
+        warnings.append("JARVIS_HOST is empty.")
+    if s.backup_retention_days < 0:
+        warnings.append("BACKUP_RETENTION_DAYS must be >= 0.")
     return warnings
 
 

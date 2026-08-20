@@ -33,6 +33,7 @@ logging.basicConfig(
 
 def _startup() -> None:
     """Idempotent one-time initialisation (tables, TTL sweep, task recovery)."""
+    _log_deployment_warnings()
     try:
         from jarvis.persistence import create_all
         from jarvis.persistence.repo import repos
@@ -59,6 +60,19 @@ def _startup() -> None:
         logging.getLogger("jarvis.api").warning("Stale-task recovery failed: %s", exc)
 
 
+def _log_deployment_warnings() -> None:
+    """Log any deployment-profile security warnings at startup (no secrets)."""
+    try:
+        from jarvis.config.deployment import validate_deployment
+
+        for warning in validate_deployment():
+            logging.getLogger("jarvis.api").warning("Deployment: %s", warning)
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger("jarvis.api").warning(
+            "Could not evaluate deployment profile: %s", exc
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Run one-time init on startup; stop the sweeper on shutdown."""
@@ -74,6 +88,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Jarvis Assistant API", version="0.2.0", lifespan=lifespan)
+
+
+# Phase 7 :: network security (CORS, trusted hosts, headers, proxy awareness).
+# Installed at import so every request (including /ready) is protected.
+from jarvis.api.security import install_security_stack
+
+install_security_stack(app)
 
 
 @app.exception_handler(APIError)
@@ -147,6 +168,100 @@ def health() -> dict:
         "status": "ok",
         "ollama_reachable": ollama_ok,
     }
+
+
+def _ready_checks() -> dict:
+    """Readiness checks for the current deployment profile.
+
+    Required checks (failing any makes the app NOT ready):
+      * database — engine can run a trivial query;
+      * deployment — the profile's security expectations are satisfied;
+      * ollama — reachable (required for local/single_host).
+    Informational checks (never fail readiness):
+      * cloud — reports whether the cloud is configured and budgeted.
+    Never exposes secrets.
+    """
+    checks: dict[str, dict] = {}
+
+    try:
+        from sqlalchemy import text
+
+        from jarvis.persistence.engine import engine_from_settings
+
+        with engine_from_settings().connect() as conn:
+            conn.execute(text("SELECT 1"))
+        checks["database"] = {"ok": True, "detail": "database reachable", "required": True}
+    except Exception as exc:  # noqa: BLE001
+        checks["database"] = {
+            "ok": False,
+            "detail": f"database unavailable: {exc.__class__.__name__}",
+            "required": True,
+        }
+
+    from jarvis.config.deployment import normalize_profile, validate_deployment
+
+    profile = normalize_profile(settings.deployment_profile)
+    warnings = validate_deployment()
+    checks["deployment"] = {
+        "ok": not warnings,
+        "detail": "deployment profile valid" if not warnings else "; ".join(warnings),
+        "required": True,
+    }
+
+    from jarvis.models.runtime_diagnostics import check_ollama_reachable
+
+    ollama_ok, ollama_warns = check_ollama_reachable()
+    required_ollama = profile in ("local", "single_host")
+    checks["ollama"] = {
+        "ok": ollama_ok,
+        "detail": "ollama reachable" if ollama_ok else "; ".join(ollama_warns),
+        "required": required_ollama,
+    }
+
+    from jarvis.config.deployment import cloud_budget_enforced
+
+    if settings.openrouter_api_key:
+        detail = (
+            "configured, budget enforced"
+            if cloud_budget_enforced()
+            else "configured, no budget enforced"
+        )
+    else:
+        detail = "not configured"
+    checks["cloud"] = {
+        "ok": True,
+        "detail": detail,
+        "required": False,
+    }
+    return checks
+
+
+@app.get("/ready")
+def ready():
+    """Readiness probe for the selected deployment profile.
+
+    Returns 200 with ``status: "ready"`` (or ``"degraded"`` when only
+    informational checks warn) and **503** when a required dependency is
+    unavailable or the profile's security expectations are not met. Never
+    exposes secrets.
+    """
+    from fastapi.responses import JSONResponse
+
+    checks = _ready_checks()
+    required_ok = all(c["ok"] for c in checks.values() if c.get("required"))
+    informational_ok = all(
+        c["ok"] for c in checks.values() if not c.get("required")
+    )
+    if required_ok and informational_ok:
+        status = "ready"
+        code = 200
+    elif required_ok:
+        status = "degraded"
+        code = 200
+    else:
+        status = "not_ready"
+        code = 503
+    return JSONResponse(status_code=code, content={"status": status, "checks": checks})
 
 
 @app.get("/models")

@@ -113,51 +113,15 @@ def create_all() -> None:
     ensure_schema()
 
 
-# Phase 6 :: additive schema migration for the `sessions` table. ``create_all``
-# does not alter existing tables, so new columns added by newer code versions
-# are applied here with a plain ALTER TABLE. Only columns that are missing are
-# added; existing rows keep their values (token security migrates lazily on
-# first use).
-_NEW_SESSION_COLUMNS: dict[str, dict[str, str]] = {
-    "token_hash": {"sqlite": "VARCHAR(512)", "postgresql": "VARCHAR(512)"},
-    "token_hash_scheme": {"sqlite": "VARCHAR(16)", "postgresql": "VARCHAR(16)"},
-    "token_created_at": {"sqlite": "DATETIME", "postgresql": "TIMESTAMP"},
-    "token_expires_at": {"sqlite": "DATETIME", "postgresql": "TIMESTAMP"},
-    "token_rotated_at": {"sqlite": "DATETIME", "postgresql": "TIMESTAMP"},
-    "token_revoked_at": {"sqlite": "DATETIME", "postgresql": "TIMESTAMP"},
-}
-
-
+# Phase 7 :: schema versioning. The versioned, idempotent migration runner
+# (``jarvis.persistence.schema``) supersedes the old ad-hoc ALTER TABLE patch:
+# it records applied versions in a ``schema_version`` table and stays
+# backward-compatible for fresh and existing databases.
 def ensure_schema() -> None:
-    """Additively migrate the schema to match the current models (idempotent)."""
-    import logging
+    """Apply schema migrations to match the current code (idempotent)."""
+    from jarvis.persistence.schema import apply_migrations
 
-    from sqlalchemy import inspect, text
-
-    logger = logging.getLogger("jarvis.persistence.engine")
-    eng = engine_from_settings()
-    insp = inspect(eng)
-    try:
-        if "sessions" not in insp.get_table_names():
-            return
-        existing = {c["name"] for c in insp.get_columns("sessions")}
-    except Exception:  # noqa: BLE001 — best-effort migration, never crash startup
-        logger.warning("ensure_schema: could not inspect sessions table", exc_info=True)
-        return
-    dialect = eng.dialect.name
-    added: list[str] = []
-    for col, types in _NEW_SESSION_COLUMNS.items():
-        if col in existing:
-            continue
-        ddl_type = types.get(dialect) or types["sqlite"]
-        try:
-            with eng.begin() as conn:
-                conn.execute(text(f"ALTER TABLE sessions ADD COLUMN {col} {ddl_type}"))
-            added.append(col)
-        except Exception:  # noqa: BLE001
-            logger.warning("ensure_schema: failed to add column %s", col, exc_info=True)
-    if added:
-        logger.info("Schema migration: added %s to sessions", ", ".join(added))
+    apply_migrations(engine_from_settings())
 
 
 def reset_engine_for_tests(url: str = "sqlite:///:memory:") -> Engine:
