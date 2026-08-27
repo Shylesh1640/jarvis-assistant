@@ -239,9 +239,9 @@ class Settings(BaseSettings):
     # a giant paste cannot dominate the context window. 0 = unbounded.
     selected_text_token_cap: int = 1024
 
-    # --- Phase 5 :: RAG retrieval quality ---
+# --- Phase 5 :: RAG retrieval quality ---
     # Preferred Phase 5 names for the RAG quality knobs. The legacy fields
-    # above (rag_relevance_threshold / rerank_keyword_weight) remain
+    # above (rag_relevance_threshold, rerank_keyword_weight) remain
     # honoured for backward compatibility — see the resolvers below.
     #
     # Minimum relevance score (cosine similarity, 0..1) for retrieved chunks.
@@ -262,6 +262,26 @@ class Settings(BaseSettings):
     # 0 = unlimited. Prevents a single large document from dominating the
     # retrieved context at the expense of other relevant sources.
     retrieval_per_source_limit: int = 0
+
+    # --- Phase 10 :: Advanced RAG pipeline ---
+    # Master switch for hybrid retrieval (dense + sparse).
+    rag_hybrid_retrieval_enabled: bool = True
+    # Weight for dense (embedding) retrieval in hybrid fusion.
+    rag_dense_weight: float = 0.7
+    # Weight for sparse (keyword/BM25) retrieval in hybrid fusion.
+    rag_sparse_weight: float = 0.3
+    # Enable query expansion (synonyms, related concepts, abbreviations).
+    rag_query_expansion_enabled: bool = True
+    # Maximum number of query variants to generate (including original).
+    rag_query_expansion_max_variants: int = 3
+    # Enable cross-encoder re-ranking of initial retrieval results.
+    rag_reranking_enabled: bool = True
+    # Cross-encoder model name (empty = use simple scoring, no external model).
+    rag_reranking_model: str = ""
+    # Initial retrieval k for re-ranking pipeline.
+    rag_initial_retrieval_k: int = 50
+    # Final retrieval n after re-ranking.
+    rag_final_retrieval_n: int = 5
 
     # --- GPU / Ollama runtime optimization (request-level options) ---
     # Master switch; when False the runtime-options block below is skipped
