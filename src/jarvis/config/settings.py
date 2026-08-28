@@ -394,6 +394,18 @@ class Settings(BaseSettings):
     # Max in-memory traces retained for GET /traces/recent.
     trace_retention_limit: int = 256
 
+    # --- Phase 11 :: User and Role Management ---
+    # Master switch for user management features.
+    user_management_enabled: bool = False
+    # Default role assigned to new users.
+    default_role: str = "user"
+    # Minimum password length.
+    password_min_length: int = 12
+    # Require special characters in passwords.
+    password_require_special_char: bool = True
+    # Maximum number of concurrent sessions per user.
+    session_max_per_user: int = 10
+
     # --- Phase 7 :: deployment profile ---
     # One of: local | single_host | production. Drives safe defaults and
     # validation (see jarvis.config.deployment). local = localhost-only dev;
@@ -680,6 +692,11 @@ def validate_runtime_settings(s: "Settings | None" = None) -> list[str]:
         warnings.append("JARVIS_HOST is empty.")
     if s.backup_retention_days < 0:
         warnings.append("BACKUP_RETENTION_DAYS must be >= 0.")
+    if s.user_management_enabled:
+        if s.password_min_length < 8:
+            warnings.append("PASSWORD_MIN_LENGTH must be >= 8.")
+        if s.session_max_per_user < 1:
+            warnings.append("SESSION_MAX_PER_USER must be >= 1.")
     return warnings
 
 

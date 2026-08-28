@@ -25,7 +25,9 @@ class SessionRow(Base):
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
     # Optional user identifier reserved for future auth.
-    user_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    user_id: Mapped[str | None] = mapped_column(
+        String(128), ForeignKey("users.user_id"), nullable=True
+    )
     # Per-session bearer token used to prevent cross-session access when
     # ``settings.require_session_token`` is enabled.
     token: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -70,6 +72,7 @@ class SessionRow(Base):
         cascade="all, delete-orphan",
         order_by="SummaryRow.id",
     )
+    user: Mapped["UserRow"] = relationship("UserRow", back_populates="sessions", foreign_keys=[user_id])
 
 
 class MessageRow(Base):
@@ -269,3 +272,50 @@ class EmailDraftRow(Base):
     )
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     source_request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class UserRow(Base):
+    """User account (Phase 11 :: user management)."""
+
+    __tablename__ = "users"
+
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    email: Mapped[str | None] = mapped_column(String(256), unique=True, nullable=True)
+    display_name: Mapped[str] = mapped_column(String(128))
+    password_hash: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    role_id: Mapped[str] = mapped_column(String(64), ForeignKey("roles.role_id"), default="user")
+    is_active: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    sessions: Mapped[list["SessionRow"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan", order_by="SessionRow.created_at"
+    )
+    role: Mapped["RoleRow"] = relationship("RoleRow", back_populates="users", foreign_keys=[role_id])
+
+
+class RoleRow(Base):
+    """Role definition (Phase 11 :: role management)."""
+
+    __tablename__ = "roles"
+
+    role_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    role_name: Mapped[str] = mapped_column(String(64), unique=True)
+    permissions: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+    users: Mapped[list["UserRow"]] = relationship(
+        back_populates="role", cascade="all, delete-orphan"
+    )
+
+# Add role relationship to UserRow
+UserRow.role = relationship("RoleRow", back_populates="users", foreign_keys=[UserRow.role_id])
+
+# Add user relationship to SessionRow
+SessionRow.user = relationship("UserRow", back_populates="sessions", foreign_keys=[SessionRow.user_id])

@@ -8,6 +8,7 @@ a hot path.)
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import desc, func, select
@@ -19,10 +20,12 @@ from jarvis.persistence.models import (
     EmailDraftRow,
     FeedbackRow,
     MessageRow,
+    RoleRow,
     SessionRow,
     SummaryRow,
     TaskRow,
     TodoRow,
+    UserRow,
 )
 from jarvis.security.token_hasher import new_session_token, verify_token
 
@@ -1199,6 +1202,175 @@ class EmailDraftRepo:
             return True
 
 
+class UserRepo:
+    """User account management (Phase 11)."""
+
+    def create(
+        self,
+        user_id: str,
+        *,
+        email: str | None = None,
+        display_name: str,
+        password_hash: str | None = None,
+        role_id: str = "user",
+        is_active: bool = True,
+    ) -> UserRow:
+        from datetime import datetime, timezone
+
+        with get_session() as s:
+            row = UserRow(
+                user_id=user_id,
+                email=email,
+                display_name=display_name,
+                password_hash=password_hash,
+                role_id=role_id,
+                is_active=is_active,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            s.add(row)
+            s.flush()
+            return row
+
+    def get(self, user_id: str) -> UserRow | None:
+        with get_session() as s:
+            return s.get(UserRow, user_id)
+
+    def get_by_email(self, email: str) -> UserRow | None:
+        with get_session() as s:
+            return s.scalar(select(UserRow).where(UserRow.email == email))
+
+    def list(self, limit: int = 100, offset: int = 0) -> list[UserRow]:
+        with get_session() as s:
+            return list(
+                s.scalars(
+                    select(UserRow)
+                    .order_by(UserRow.created_at.desc())
+                    .limit(limit)
+                    .offset(offset)
+                ).all()
+            )
+
+    def update(
+        self,
+        user_id: str,
+        *,
+        email: str | None = None,
+        display_name: str | None = None,
+        password_hash: str | None = None,
+        role_id: str | None = None,
+        is_active: bool | None = None,
+    ) -> UserRow | None:
+        with get_session() as s:
+            row = s.get(UserRow, user_id)
+            if row is None:
+                return None
+            if email is not None:
+                row.email = email
+            if display_name is not None:
+                row.display_name = display_name
+            if password_hash is not None:
+                row.password_hash = password_hash
+            if role_id is not None:
+                row.role_id = role_id
+            if is_active is not None:
+                row.is_active = is_active
+            row.updated_at = datetime.now(timezone.utc)
+            s.flush()
+            return row
+
+    def deactivate(self, user_id: str) -> bool:
+        return self.update(user_id, is_active=False) is not None
+
+    def activate(self, user_id: str) -> bool:
+        return self.update(user_id, is_active=True) is not None
+
+    def delete(self, user_id: str) -> bool:
+        with get_session() as s:
+            row = s.get(UserRow, user_id)
+            if row is None:
+                return False
+            s.delete(row)
+            s.flush()
+            return True
+
+    def update_last_login(self, user_id: str) -> None:
+        from datetime import datetime, timezone
+
+        with get_session() as s:
+            row = s.get(UserRow, user_id)
+            if row is not None:
+                row.last_login_at = datetime.now(timezone.utc)
+                s.flush()
+
+
+class RoleRepo:
+    """Role management (Phase 11)."""
+
+    def create(
+        self,
+        role_id: str,
+        *,
+        role_name: str,
+        permissions: list[str] | None = None,
+    ) -> RoleRow:
+        from datetime import datetime, timezone
+
+        with get_session() as s:
+            row = RoleRow(
+                role_id=role_id,
+                role_name=role_name,
+                permissions=list(permissions or []),
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            s.add(row)
+            s.flush()
+            return row
+
+    def get(self, role_id: str) -> RoleRow | None:
+        with get_session() as s:
+            return s.get(RoleRow, role_id)
+
+    def get_by_name(self, role_name: str) -> RoleRow | None:
+        with get_session() as s:
+            return s.scalar(select(RoleRow).where(RoleRow.role_name == role_name))
+
+    def list(self, limit: int = 100) -> list[RoleRow]:
+        with get_session() as s:
+            return list(
+                s.scalars(select(RoleRow).order_by(RoleRow.created_at.desc()).limit(limit)).all()
+            )
+
+    def update(
+        self,
+        role_id: str,
+        *,
+        role_name: str | None = None,
+        permissions: list[str] | None = None,
+    ) -> RoleRow | None:
+        with get_session() as s:
+            row = s.get(RoleRow, role_id)
+            if row is None:
+                return None
+            if role_name is not None:
+                row.role_name = role_name
+            if permissions is not None:
+                row.permissions = list(permissions)
+            row.updated_at = datetime.now(timezone.utc)
+            s.flush()
+            return row
+
+    def delete(self, role_id: str) -> bool:
+        with get_session() as s:
+            row = s.get(RoleRow, role_id)
+            if row is None:
+                return False
+            s.delete(row)
+            s.flush()
+            return True
+
+
 class _Repos:
     sessions = SessionRepo()
     messages = MessageRepo()
@@ -1209,6 +1381,8 @@ class _Repos:
     cloud_usage = CloudUsageRepo()
     todos = TodoRepo()
     email_drafts = EmailDraftRepo()
+    users = UserRepo()
+    roles = RoleRepo()
 
 
 repos = _Repos
@@ -1224,5 +1398,7 @@ __all__ = [
     "CloudUsageRepo",
     "TodoRepo",
     "EmailDraftRepo",
+    "UserRepo",
+    "RoleRepo",
     "repos",
 ]

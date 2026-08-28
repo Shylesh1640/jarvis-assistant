@@ -18,6 +18,9 @@ from jarvis.api.routes.connectors import router as connectors_router
 from jarvis.api.routes.email_drafts import router as email_drafts_router
 from jarvis.api.routes.ide import router as ide_router
 from jarvis.api.routes.voice import router as voice_router
+from jarvis.api.routes.auth import router as auth_router
+from jarvis.api.routes.users import router as users_router
+from jarvis.api.routes.roles import router as roles_router
 from jarvis.api.routes.cost import router as cost_router
 from jarvis.api.routes.documents import router as documents_router
 from jarvis.api.routes.feedback import router as feedback_router
@@ -183,6 +186,9 @@ app.include_router(email_drafts_router)
 app.include_router(connectors_router)
 app.include_router(ide_router)
 app.include_router(voice_router)
+app.include_router(auth_router)
+app.include_router(users_router)
+app.include_router(roles_router)
 
 
 @app.get("/health")
