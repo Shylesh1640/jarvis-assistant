@@ -73,7 +73,7 @@ Think step by step. Provide your reasoning clearly, then give your final answer.
 
 Reasoning:
 """
-        prompt = self._build_prompt(question, context, template)
+        self._build_prompt(question, context, template)
         # In a real implementation, this would call the LLM
         # For now, return a placeholder
         return ReasoningResult(
@@ -106,7 +106,7 @@ Select the best branch and provide the final answer.
 
 Branches:
 """
-        prompt = self._build_prompt(question, context, template)
+        self._build_prompt(question, context, template)
         return ReasoningResult(
             strategy=self.strategy,
             answer="[ToT answer would be generated here]",
@@ -133,7 +133,7 @@ Then select the most consistent answer.
 
 Samples:
 """
-        prompt = self._build_prompt(question, context, template)
+        self._build_prompt(question, context, template)
         return ReasoningResult(
             strategy=self.strategy,
             answer="[Self-consistency answer would be generated here]",
@@ -162,7 +162,7 @@ Iterate up to {max_iterations} times:
 
 Final refined answer:
 """
-        prompt = self._build_prompt(question, context, template)
+        self._build_prompt(question, context, template)
         return ReasoningResult(
             strategy=self.strategy,
             answer="[Reflexion answer would be generated here]",
@@ -199,7 +199,7 @@ Question: {question}
 
 Provide a direct, concise answer.
 """
-            prompt = self._build_prompt(question, context, template)
+            self._build_prompt(question, context, template)
             return ReasoningResult(
                 strategy=self.strategy,
                 answer="[Fast path answer would be generated here]",

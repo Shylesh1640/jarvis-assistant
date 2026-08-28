@@ -30,6 +30,7 @@ from jarvis.api.routes.sessions import router as sessions_router
 from jarvis.api.routes.tasks import router as tasks_router
 from jarvis.api.routes.traces import router as traces_router
 from jarvis.api.routes.todos import router as todos_router
+from jarvis.api.routes.deep_thinking import router as deep_thinking_router
 from jarvis.api.security import install_security_stack
 from jarvis.config.settings import settings
 from jarvis.observability.logging_config import setup_logging
@@ -189,6 +190,7 @@ app.include_router(voice_router)
 app.include_router(auth_router)
 app.include_router(users_router)
 app.include_router(roles_router)
+app.include_router(deep_thinking_router)
 
 
 @app.get("/health")

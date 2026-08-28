@@ -17,6 +17,14 @@ class JarvisState(TypedDict, total=False):
     show_reasoning: bool
     answer_style: str  # "concise" | "detailed" | "code"
 
+    # Deep thinking / reasoning
+    deep_thinking_enabled: bool
+    deep_thinking_show_reasoning: bool
+    reasoning_strategy: str  # "auto" | "cot" | "tot" | "self_consistency" | "reflexion" | "fast_and_slow"
+    reasoning_chain: list[dict]  # reasoning steps
+    reasoning_sub_problems: list[str]
+    reasoning_confidence: float
+
     messages: Annotated[list[Any], add_messages]
 
     intent: Literal["general", "coding", "complex"]
@@ -66,3 +74,9 @@ class JarvisState(TypedDict, total=False):
     gpu_fallback_used: bool
     cpu_fallback_used: bool
     runtime_warning: str | None
+
+    # Phase 13 :: Deep thinking / reasoning metrics
+    tokens_used_reasoning: int
+    tokens_used_answer: int
+    latency_ms_reasoning: int
+    latency_ms_answer: int

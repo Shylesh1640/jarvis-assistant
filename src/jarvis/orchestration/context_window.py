@@ -266,6 +266,25 @@ def build_user_message(state: JarvisState) -> str:
     )
 
 
+def _format_reasoning_chain(chain: list[dict]) -> str:
+    """Render reasoning steps into a system-prompt block."""
+    if not chain:
+        return ""
+    lines = ["<<<DEEP THINKING REASONING CHAIN>>>"]
+    for step in chain:
+        num = step.get("step_number", len(lines))
+        sub = step.get("sub_problem", "")
+        analysis = step.get("analysis", "")
+        conclusion = step.get("conclusion", "")
+        lines.append(f"Step {num}: {sub}")
+        if analysis:
+            lines.append(f"Analysis: {analysis}")
+        if conclusion:
+            lines.append(f"Conclusion: {conclusion}")
+    lines.append("<<<END REASONING CHAIN>>>")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Final message assembly (used by general branch)
 # ---------------------------------------------------------------------------
@@ -297,6 +316,12 @@ def build_final_messages(state: JarvisState, s: Settings = settings) -> list[Bas
             messages.append(HumanMessage(content=content))
         elif role == "assistant":
             messages.append(AIMessage(content=content))
+
+    reasoning_chain = state.get("reasoning_chain")
+    if reasoning_chain:
+        chain_block = _format_reasoning_chain(reasoning_chain)
+        if chain_block:
+            messages.append(SystemMessage(content=chain_block))
 
     messages.append(HumanMessage(content=build_user_message(state)))
     _log_context_size(state, messages, s)

@@ -19,6 +19,10 @@ class ChatRequest(BaseModel):
     # UI toggles plumbed end-to-end through the graph state.
     show_reasoning: bool = False
     answer_style: str | None = None  # "concise" | "detailed" | "code"
+    # Deep thinking / reasoning
+    deep_thinking: bool = False
+    reasoning_strategy: str | None = None  # "auto" | "cot" | "tot" | "self_consistency" | "reflexion" | "fast_and_slow"
+    show_reasoning_chain: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -56,6 +60,17 @@ class ChatResponse(BaseModel):
     cloud_used: bool = False
     estimated_cost_usd: float | None = None
     runtime_warning: str | None = None
+    # Phase 13 :: Deep thinking / reasoning metadata
+    deep_thinking_used: bool = False
+    reasoning_strategy: str | None = None
+    reasoning_chain_visible: bool = False
+    reasoning_steps: int = 0
+    tokens_used_reasoning: int = 0
+    tokens_used_answer: int = 0
+    total_tokens: int = 0
+    latency_ms_reasoning: int = 0
+    latency_ms_answer: int = 0
+    total_latency_ms: int = 0
 
 
 class TaskCreateRequest(BaseModel):

@@ -329,6 +329,10 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
         "show_reasoning": payload.show_reasoning,
         "answer_style": payload.answer_style,
         "as_background_task": False,
+        # Deep thinking / reasoning
+        "deep_thinking_enabled": payload.deep_thinking,
+        "deep_thinking_show_reasoning": payload.show_reasoning_chain,
+        "reasoning_strategy": payload.reasoning_strategy or "auto",
     }
 
     if selected_text:
@@ -498,4 +502,14 @@ def _build_response(session_id: str, result: dict) -> ChatResponse:
         cloud_used=bool(result.get("cloud_used")),
         estimated_cost_usd=result.get("estimated_cost_usd"),
         runtime_warning=result.get("runtime_warning"),
+        deep_thinking_used=result.get("deep_thinking_used", False),
+        reasoning_strategy=result.get("reasoning_strategy"),
+        reasoning_chain_visible=result.get("reasoning_chain_visible", False),
+        reasoning_steps=result.get("reasoning_steps", 0),
+        tokens_used_reasoning=result.get("tokens_used_reasoning", 0),
+        tokens_used_answer=result.get("tokens_used_answer", 0),
+        total_tokens=result.get("total_tokens", 0),
+        latency_ms_reasoning=result.get("latency_ms_reasoning", 0),
+        latency_ms_answer=result.get("latency_ms_answer", 0),
+        total_latency_ms=result.get("total_latency_ms", 0),
     )
