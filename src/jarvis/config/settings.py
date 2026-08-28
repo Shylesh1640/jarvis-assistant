@@ -516,6 +516,30 @@ class Settings(BaseSettings):
         legacy_kw = max(0.0, min(1.0, self.rerank_keyword_weight))
         return legacy_kw
 
+    # ------------------------------------------------------------------
+    # Phase 10 :: backward-compatible resolvers for advanced RAG pipeline.
+    # ------------------------------------------------------------------
+
+    @property
+    def effective_dense_weight(self) -> float:
+        """Dense (embedding) weight for hybrid retrieval (0..1).
+
+        Falls back to legacy ``effective_vector_weight`` when Phase 10
+        specific weights are not set.
+        """
+        if self.rag_dense_weight != 0.7 or self.rag_sparse_weight != 0.3:
+            total = (self.rag_dense_weight + self.rag_sparse_weight) or 1.0
+            return max(0.0, min(1.0, self.rag_dense_weight / total))
+        return self.effective_vector_weight
+
+    @property
+    def effective_sparse_weight(self) -> float:
+        """Sparse (keyword/BM25) weight for hybrid retrieval (0..1)."""
+        if self.rag_dense_weight != 0.7 or self.rag_sparse_weight != 0.3:
+            total = (self.rag_dense_weight + self.rag_sparse_weight) or 1.0
+            return max(0.0, min(1.0, self.rag_sparse_weight / total))
+        return self.effective_keyword_weight
+
 
 # ---------------------------------------------------------------------------
 # Compat gate: only emit Ollama options the installed version understands.
@@ -582,6 +606,22 @@ def validate_runtime_settings(s: "Settings | None" = None) -> list[str]:
             )
     if s.retrieval_per_source_limit < 0:
         warnings.append("RETRIEVAL_PER_SOURCE_LIMIT must be >= 0 (0 = unlimited).")
+    if s.rag_hybrid_retrieval_enabled:
+        if not (0.0 <= s.rag_dense_weight <= 1.0):
+            warnings.append("RAG_DENSE_WEIGHT must be in [0, 1].")
+        if not (0.0 <= s.rag_sparse_weight <= 1.0):
+            warnings.append("RAG_SPARSE_WEIGHT must be in [0, 1].")
+        total = s.rag_dense_weight + s.rag_sparse_weight
+        if total <= 0:
+            warnings.append("RAG_DENSE_WEIGHT + RAG_SPARSE_WEIGHT must be > 0 (both are zero).")
+    if s.rag_query_expansion_enabled and s.rag_query_expansion_max_variants < 1:
+        warnings.append("RAG_QUERY_EXPANSION_MAX_VARIANTS must be >= 1.")
+    if s.rag_reranking_enabled and s.rag_initial_retrieval_k < 1:
+        warnings.append("RAG_INITIAL_RETRIEVAL_K must be >= 1.")
+    if s.rag_reranking_enabled and s.rag_final_retrieval_n < 1:
+        warnings.append("RAG_FINAL_RETRIEVAL_N must be >= 1.")
+    if s.rag_reranking_enabled and s.rag_final_retrieval_n > s.rag_initial_retrieval_k:
+        warnings.append("RAG_FINAL_RETRIEVAL_N must be <= RAG_INITIAL_RETRIEVAL_K.")
     if s.max_plan_steps < 0:
         warnings.append("MAX_PLAN_STEPS must be >= 0 (0 = no planning node).")
     if s.max_task_duration_seconds < 0:
