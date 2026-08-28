@@ -416,6 +416,20 @@ class Settings(BaseSettings):
     # Number of recovery codes to generate during enrollment.
     two_factor_recovery_codes_count: int = 10
 
+    # --- Phase 13 :: Deep Thinking Mode ---
+    # Master switch for deep thinking mode.
+    deep_thinking_enabled: bool = True
+    # Automatically trigger deep thinking for complex questions.
+    deep_thinking_auto_trigger: bool = True
+    # Confidence threshold (0..1) for auto-triggering deep thinking.
+    deep_thinking_auto_trigger_confidence_threshold: float = 0.7
+    # Maximum number of reasoning steps in deep thinking.
+    deep_thinking_max_reasoning_steps: int = 5
+    # Token multiplier for deep thinking (multiplies context budget).
+    deep_thinking_max_tokens_factor: float = 3.0
+    # Show reasoning chain in response (can be overridden per-request).
+    deep_thinking_show_reasoning_chain: bool = False
+
     # --- Phase 7 :: deployment profile ---
     # One of: local | single_host | production. Drives safe defaults and
     # validation (see jarvis.config.deployment). local = localhost-only dev;
@@ -712,6 +726,13 @@ def validate_runtime_settings(s: "Settings | None" = None) -> list[str]:
             warnings.append("TWO_FACTOR_REMEMBER_DEVICE_DAYS must be >= 1.")
         if s.two_factor_recovery_codes_count < 1:
             warnings.append("TWO_FACTOR_RECOVERY_CODES_COUNT must be >= 1.")
+    if s.deep_thinking_enabled:
+        if not (0.0 <= s.deep_thinking_auto_trigger_confidence_threshold <= 1.0):
+            warnings.append("DEEP_THINKING_AUTO_TRIGGER_CONFIDENCE_THRESHOLD must be in [0, 1].")
+        if s.deep_thinking_max_reasoning_steps < 1:
+            warnings.append("DEEP_THINKING_MAX_REASONING_STEPS must be >= 1.")
+        if s.deep_thinking_max_tokens_factor < 1.0:
+            warnings.append("DEEP_THINKING_MAX_TOKENS_FACTOR must be >= 1.0.")
     return warnings
 
 
