@@ -290,6 +290,12 @@ class UserRow(Base):
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Phase 12 :: Two-Factor Authentication
+    totp_secret: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    totp_enabled: Mapped[bool] = mapped_column(default=False)
+    recovery_codes: Mapped[list] = mapped_column(JSON, default=list)
+    last_totp_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    remember_device_token: Mapped[str | None] = mapped_column(String(256), nullable=True)
 
     sessions: Mapped[list["SessionRow"]] = relationship(
         back_populates="user", cascade="all, delete-orphan", order_by="SessionRow.created_at"

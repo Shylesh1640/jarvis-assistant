@@ -707,6 +707,11 @@ def validate_runtime_settings(s: "Settings | None" = None) -> list[str]:
             warnings.append("PASSWORD_MIN_LENGTH must be >= 8.")
         if s.session_max_per_user < 1:
             warnings.append("SESSION_MAX_PER_USER must be >= 1.")
+    if s.two_factor_auth_enabled:
+        if s.two_factor_remember_device_days < 1:
+            warnings.append("TWO_FACTOR_REMEMBER_DEVICE_DAYS must be >= 1.")
+        if s.two_factor_recovery_codes_count < 1:
+            warnings.append("TWO_FACTOR_RECOVERY_CODES_COUNT must be >= 1.")
     return warnings
 
 
