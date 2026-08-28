@@ -1,9 +1,9 @@
-"""RAG query classification and rewriting.
+"""RAG query classification, rewriting, and expansion.
 
 Phase 5 :: RAG retrieval quality.
+Phase 10 :: Advanced RAG pipeline - query expansion.
 
 Two small, pure, rules-based helpers sit in front of retrieval:
-
 * ``is_smalltalk`` — recognises greetings / social filler so the RAG
   layer can skip an expensive embedding + search that would return
   nothing useful.
@@ -11,14 +11,17 @@ Two small, pure, rules-based helpers sit in front of retrieval:
   tell me about...", "what is...") and trailing filler so the embedding
   model gets the *informational core* of the question. Long prompts are
   trimmed to the part that carries the most signal.
+* ``expand_query`` — generates query variants (synonyms, related concepts,
+  abbreviated forms) for expanded retrieval coverage.
 
-Both are deliberately deterministic and LLM-free: they add zero latency
+All are deliberately deterministic and LLM-free: they add minimal latency
 and are easy to unit test. Anything ambiguous is passed through
 unchanged (fail-open), so we never *lose* retrieval signal.
 """
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 
 # ---------------------------------------------------------------------------
 # Small-talk detection
@@ -207,4 +210,119 @@ def rewrite_retrieval_query(query: str) -> str:
     return stripped
 
 
-__all__ = ["is_smalltalk", "rewrite_retrieval_query"]
+# ---------------------------------------------------------------------------
+# Query expansion (Phase 10)
+# ---------------------------------------------------------------------------
+
+# Simple synonym/related-term mappings for common technical terms.
+# This is a lightweight, LLM-free approach. For production use, consider
+# integrating a proper thesaurus or word embedding nearest-neighbors.
+_QUERY_EXPANSION_MAP: dict[str, set[str]] = {
+    "rag": {"retrieval augmented generation", "retrieval-augmented generation", "vector search"},
+    "llm": {"large language model", "language model", "gpt"},
+    "embedding": {"vector representation", "vector embedding", "semantic vector"},
+    "chroma": {"chromadb", "vector database", "vector store", "vector db"},
+    "ollama": {"local llm", "local model", "self-hosted llm"},
+    "bm25": {"keyword search", "sparse retrieval", "lexical search"},
+    "hybrid": {"combined search", "fusion retrieval", "dense sparse fusion"},
+    "rerank": {"re-rank", "reranking", "cross encoder", "cross-encoder"},
+    "api": {"rest api", "restful api", "http api", "web api"},
+    "cli": {"command line interface", "command-line", "terminal"},
+    "ui": {"user interface", "frontend", "gui"},
+    "db": {"database", "datastore", "data store"},
+    "config": {"configuration", "settings", "parameters"},
+    "auth": {"authentication", "authorization", "login", "sign in"},
+    "jwt": {"json web token", "token", "bearer token"},
+    "sql": {"structured query language", "relational database"},
+    "nosql": {"non-relational database", "document database", "key-value store"},
+    "docker": {"container", "containerization", "container platform"},
+    "kubernetes": {"k8s", "container orchestration", "container platform"},
+    "ci": {"continuous integration", "build pipeline"},
+    "cd": {"continuous deployment", "continuous delivery", "deployment pipeline"},
+    "ml": {"machine learning", "artificial intelligence", "ai"},
+    "nlp": {"natural language processing", "text processing"},
+    "cv": {"computer vision", "image processing"},
+    "rl": {"reinforcement learning", "reward learning"},
+    "gan": {"generative adversarial network", "generative model"},
+    "vae": {"variational autoencoder", "generative model"},
+    "transformer": {"attention model", "self-attention", "encoder-decoder"},
+    "bert": {"bidirectional encoder", "pretrained language model"},
+    "gpt": {"generative pretrained transformer", "autoregressive model"},
+    "agent": {"ai agent", "autonomous agent", "llm agent"},
+    "tool": {"function calling", "tool use", "api call"},
+    "prompt": {"prompt engineering", "prompting", "instruction"},
+    "fine-tune": {"fine tuning", "finetuning", "model adaptation"},
+    "lora": {"low-rank adaptation", "parameter-efficient fine-tuning"},
+    "quantization": {"quantisation", "model compression", "weight quantization"},
+    "distillation": {"knowledge distillation", "model compression"},
+}
+
+
+def _tokenize(text: str) -> list[str]:
+    """Lowercase, strip punctuation, drop stopwords."""
+    tokens = re.findall(r"[a-zA-Z0-9_]+", text.lower())
+    return [t for t in tokens if len(t) > 1]
+
+
+@lru_cache(maxsize=128)
+def _expand_single_term(term: str) -> set[str]:
+    """Get expansion terms for a single token (cached)."""
+    return _QUERY_EXPANSION_MAP.get(term, set())
+
+
+def expand_query(query: str, max_variants: int = 3) -> list[str]:
+    """Generate query variants for expanded retrieval.
+
+    Strategy:
+    1. Start with the rewritten original query.
+    2. Tokenize and find expansion terms for each token.
+    3. Generate variants by replacing tokens with their expansions.
+    4. Deduplicate and return up to max_variants queries (including original).
+
+    Fail-open: returns original query on any error or when no expansions found.
+    """
+    if not query or not query.strip():
+        return [""]
+
+    try:
+        # Start with the cleaned query
+        variants = [query.strip()]
+        tokens = _tokenize(query)
+
+        # Find tokens that have expansions
+        expansion_candidates = []
+        for token in tokens:
+            expansions = _expand_single_term(token)
+            if expansions:
+                expansion_candidates.append((token, expansions))
+
+        if not expansion_candidates:
+            return variants
+
+        # Generate variants by substituting expanded terms
+        # Simple approach: replace one token at a time with its best expansion
+        for token, expansions in expansion_candidates:
+            if len(variants) >= max_variants:
+                break
+            # Use the first/best expansion
+            best_expansion = sorted(expansions, key=len)[0]  # shortest first
+            if best_expansion != token and best_expansion not in query:
+                variant = query.replace(token, best_expansion)
+                if variant not in variants:
+                    variants.append(variant)
+
+        # Also try adding a related term as a suffix
+        if len(variants) < max_variants and expansion_candidates:
+            token, expansions = expansion_candidates[0]
+            best_expansion = sorted(expansions, key=len)[0]
+            variant = f"{query} {best_expansion}"
+            if variant not in variants:
+                variants.append(variant)
+
+        return variants[:max_variants]
+    except Exception:
+        # Fail-open: return original query
+        return [query.strip()]
+
+
+__all__ = ["is_smalltalk", "rewrite_retrieval_query", "expand_query"]
