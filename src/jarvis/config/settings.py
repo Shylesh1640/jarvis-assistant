@@ -406,6 +406,16 @@ class Settings(BaseSettings):
     # Maximum number of concurrent sessions per user.
     session_max_per_user: int = 10
 
+    # --- Phase 12 :: Two-Factor Authentication ---
+    # Master switch for 2FA features.
+    two_factor_auth_enabled: bool = False
+    # Require 2FA for admin users.
+    two_factor_required_for_admins: bool = True
+    # How long to remember a device after successful 2FA (days).
+    two_factor_remember_device_days: int = 30
+    # Number of recovery codes to generate during enrollment.
+    two_factor_recovery_codes_count: int = 10
+
     # --- Phase 7 :: deployment profile ---
     # One of: local | single_host | production. Drives safe defaults and
     # validation (see jarvis.config.deployment). local = localhost-only dev;
