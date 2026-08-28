@@ -430,6 +430,26 @@ class Settings(BaseSettings):
     # Show reasoning chain in response (can be overridden per-request).
     deep_thinking_show_reasoning_chain: bool = False
 
+    # --- Phase 13 :: Reasoning Strategy Variations ---
+    # Default reasoning strategy: auto|cot|tot|self_consistency|reflexion|fast_and_slow
+    reasoning_strategy_default: str = "auto"
+    # Enable Chain-of-Thought reasoning.
+    reasoning_strategy_cot_enabled: bool = True
+    # Enable Tree-of-Thought reasoning.
+    reasoning_strategy_tot_enabled: bool = True
+    # Maximum branches for ToT.
+    reasoning_strategy_tot_max_branches: int = 3
+    # Enable Self-Consistency reasoning.
+    reasoning_strategy_self_consistency_enabled: bool = True
+    # Number of samples for self-consistency.
+    reasoning_strategy_self_consistency_num_samples: int = 3
+    # Enable Reflexion reasoning.
+    reasoning_strategy_reflexion_enabled: bool = True
+    # Maximum iterations for Reflexion.
+    reasoning_strategy_reflexion_max_iterations: int = 2
+    # Enable Fast-and-Slow reasoning.
+    reasoning_strategy_fast_and_slow_enabled: bool = True
+
     # --- Phase 7 :: deployment profile ---
     # One of: local | single_host | production. Drives safe defaults and
     # validation (see jarvis.config.deployment). local = localhost-only dev;
@@ -733,6 +753,18 @@ def validate_runtime_settings(s: "Settings | None" = None) -> list[str]:
             warnings.append("DEEP_THINKING_MAX_REASONING_STEPS must be >= 1.")
         if s.deep_thinking_max_tokens_factor < 1.0:
             warnings.append("DEEP_THINKING_MAX_TOKENS_FACTOR must be >= 1.0.")
+    # --- Phase 13 :: Reasoning Strategy validation ---
+    if s.reasoning_strategy_default not in ("auto", "cot", "tot", "self_consistency", "reflexion", "fast_and_slow"):
+        warnings.append(
+            f"REASONING_STRATEGY_DEFAULT='{s.reasoning_strategy_default}' is invalid; "
+            "use 'auto', 'cot', 'tot', 'self_consistency', 'reflexion', or 'fast_and_slow'."
+        )
+    if s.reasoning_strategy_tot_max_branches < 1:
+        warnings.append("REASONING_STRATEGY_TOT_MAX_BRANCHES must be >= 1.")
+    if s.reasoning_strategy_self_consistency_num_samples < 1:
+        warnings.append("REASONING_STRATEGY_SELF_CONSISTENCY_NUM_SAMPLES must be >= 1.")
+    if s.reasoning_strategy_reflexion_max_iterations < 1:
+        warnings.append("REASONING_STRATEGY_REFLEXION_MAX_ITERATIONS must be >= 1.")
     return warnings
 
 
