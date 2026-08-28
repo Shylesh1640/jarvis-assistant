@@ -353,6 +353,12 @@ def build_final_chat_dicts(state: JarvisState, s: Settings = settings) -> list[d
         if role in ("user", "assistant"):
             items.append({"role": role, "content": m.get("content", "")})
 
+    reasoning_chain = state.get("reasoning_chain")
+    if reasoning_chain:
+        chain_block = _format_reasoning_chain(reasoning_chain)
+        if chain_block:
+            items.append({"role": "system", "content": chain_block})
+
     items.append({"role": "user", "content": build_user_message(state)})
     _log_context_size_dict(state, items, s)
     return items
