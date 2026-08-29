@@ -45,10 +45,9 @@ jarvis-admin = "jarvis.cli.admin:main"
 jarvis-db = "jarvis.cli.db:main"
 jarvis-todo = "jarvis.cli.todo:main"
 jarvis-calendar = "jarvis.cli.calendar:main"
-  jarvis-email = "jarvis.cli.email:main"
+jarvis-email = "jarvis.cli.email:main"
 jarvis-analyze-performance = "jarvis.cli.analyze_performance:main"
 jarvis-ab-test = "jarvis.cli.ab_testing:main"
-jarvis-analyze-performance = "jarvis.cli.analyze_performance:main"
 
 [dependency-groups]
 dev = [

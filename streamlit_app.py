@@ -374,6 +374,9 @@ if "toggles" not in st.session_state:
         "answer_style": "default",
         "background_task": False,
         "debug": False,
+        "deep_thinking": False,
+        "show_reasoning_chain": False,
+        "reasoning_strategy": "auto",
     }
 # id of a background task currently being tracked live.
 if "active_task_id" not in st.session_state:
@@ -429,6 +432,16 @@ def _assistant_record(answer: str, data: dict) -> dict:
         "sources": list(data.get("sources", [])),
         "retrieved_context": data.get("retrieved_context"),
         "approval_required": bool(data.get("approval_required")),
+        "deep_thinking_used": bool(data.get("deep_thinking_used")),
+        "reasoning_strategy": data.get("reasoning_strategy"),
+        "reasoning_steps": data.get("reasoning_steps", 0),
+        "reasoning_chain": data.get("reasoning_chain"),
+        "tokens_used_reasoning": data.get("tokens_used_reasoning", 0),
+        "tokens_used_answer": data.get("tokens_used_answer", 0),
+        "total_tokens": data.get("total_tokens", 0),
+        "latency_ms_reasoning": data.get("latency_ms_reasoning", 0),
+        "latency_ms_answer": data.get("latency_ms_answer", 0),
+        "total_latency_ms": data.get("total_latency_ms", 0),
     }
 
 
@@ -463,7 +476,7 @@ def _render_feedback_buttons(idx: int) -> None:
 
 
 def _render_assistant_meta(rec: dict, *, debug: bool) -> None:
-    """Badges, tools line, citations, copy-code helper, and debug expander."""
+    """Badges, tools line, citations, copy-code helper, reasoning chain, and debug expander."""
     path = rec.get("path", "unknown")
     path_color = {"general": "blue", "coding": "green", "complex": "violet"}.get(
         path, "gray"
@@ -489,6 +502,26 @@ def _render_assistant_meta(rec: dict, *, debug: bool) -> None:
                 st.markdown(f"**{i}. {src}**{(' — ' + chunk) if chunk else ''}")
                 if doc:
                     st.caption(doc)
+
+    if rec.get("deep_thinking_used"):
+        steps = rec.get("reasoning_steps", 0)
+        strategy = rec.get("reasoning_strategy") or "unknown"
+        st.caption(f":material/psychology: Deep thinking ({strategy}, {steps} steps)")
+
+    reasoning_chain = rec.get("_reasoning_chain")
+    if reasoning_chain:
+        with st.expander("Reasoning chain", icon=":material/account_tree:"):
+            for step in reasoning_chain:
+                step_num = step.get("step_number", "?")
+                sub = step.get("sub_problem", "")
+                analysis = step.get("analysis", "")
+                conclusion = step.get("conclusion", "")
+                st.markdown(f"**Step {step_num}:** {sub}")
+                if analysis:
+                    st.caption(f"Analysis: {analysis}")
+                if conclusion:
+                    st.caption(f"Conclusion: {conclusion}")
+                st.divider()
 
     # Copy-code button for the assistant's reply content.
     content = rec.get("content", "")
@@ -535,6 +568,9 @@ def _send_message(
     answer_style = toggles["answer_style"]
     background = toggles["background_task"]
     debug = toggles["debug"]
+    deep_thinking = toggles["deep_thinking"]
+    show_reasoning_chain = toggles["show_reasoning_chain"]
+    reasoning_strategy = toggles["reasoning_strategy"]
 
     with st.chat_message("assistant", avatar=":material/smart_toy:"):
         with st.spinner("Thinking..."):
@@ -548,6 +584,9 @@ def _send_message(
                     "approved": approved,
                     "show_reasoning": show_reasoning,
                     "answer_style": answer_style if answer_style != "default" else None,
+                    "deep_thinking": deep_thinking,
+                    "show_reasoning_chain": show_reasoning_chain,
+                    "reasoning_strategy": reasoning_strategy if reasoning_strategy != "auto" else None,
                 }
                 resp = httpx.post(API_URL, json=payload, timeout=300)
                 resp.raise_for_status()
@@ -1004,6 +1043,45 @@ with st.sidebar:
                     st.caption(f":material/error: {err}")
                 st.divider()
 
+    st.subheader("Performance analysis", divider=False)
+    with st.expander("Deep thinking & reasoning performance", icon=":material/analytics:"):
+        perf_url = f"{BASE_URL}/performance/summary"
+        try:
+            r = httpx.get(perf_url, timeout=10)
+            if r.status_code == 200:
+                perf_data = r.json()
+                st.caption(f"Records: {perf_data.get('total_records', 0)}")
+                for strategy, metrics in (perf_data.get("by_strategy") or {}).items():
+                    count = metrics.get("count", 0)
+                    acc = metrics.get("accuracy", {}).get("correctness", 0)
+                    lat = metrics.get("efficiency", {}).get("latency_ms", 0)
+                    st.caption(f"- `{strategy}`: count={count}, accuracy={acc:.2f}, latency={lat:.0f}ms")
+            else:
+                st.caption("Performance analysis unavailable.")
+        except Exception:
+            st.caption("Could not load performance data.")
+
+    st.subheader("A/B testing", divider=False)
+    with st.expander("Active reasoning A/B tests", icon=":material/science:"):
+        ab_url = f"{BASE_URL}/ab-testing/active"
+        try:
+            r = httpx.get(ab_url, timeout=10)
+            if r.status_code == 200:
+                ab_data = r.json()
+                tests = ab_data.get("tests", [])
+                if tests:
+                    for test in tests:
+                        name = test.get("name", "unnamed")
+                        va = test.get("variant_a", "A")
+                        vb = test.get("variant_b", "B")
+                        st.caption(f"`{name}`: {va} vs {vb}")
+                else:
+                    st.caption("No active A/B tests.")
+            else:
+                st.caption("A/B testing unavailable.")
+        except Exception:
+            st.caption("Could not load A/B test data.")
+
     with st.expander("Tips", icon=":material/lightbulb:"):
         st.markdown(
             "- Ask coding questions to route to the strong local coder.\n"
@@ -1051,6 +1129,30 @@ with st.container(horizontal=True):
         value=tg["show_reasoning"],
         help="Ask the model for a short reasoning section before the answer.",
         on_change=lambda: tg.update({"show_reasoning": st.session_state.tgl_reasoning}),
+    )
+    st.toggle(
+        "Deep thinking",
+        key="tgl_deep",
+        value=tg["deep_thinking"],
+        help="Enable deep reasoning chain generation for complex questions.",
+        on_change=lambda: tg.update({"deep_thinking": st.session_state.tgl_deep}),
+    )
+    st.toggle(
+        "Show chain",
+        key="tgl_chain",
+        value=tg["show_reasoning_chain"],
+        help="Show the reasoning chain in the response.",
+        on_change=lambda: tg.update({"show_reasoning_chain": st.session_state.tgl_chain}),
+    )
+    st.selectbox(
+        "Reasoning strategy",
+        ["auto", "cot", "tot", "self_consistency", "reflexion", "fast_and_slow"],
+        key="sel_reasoning",
+        index=["auto", "cot", "tot", "self_consistency", "reflexion", "fast_and_slow"].index(
+            tg["reasoning_strategy"]
+        ),
+        label_visibility="collapsed",
+        on_change=lambda: tg.update({"reasoning_strategy": st.session_state.sel_reasoning}),
     )
     st.toggle(
         "Debug",

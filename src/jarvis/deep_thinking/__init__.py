@@ -47,11 +47,7 @@ def should_trigger_deep_thinking(question: str, confidence: float = 0.5) -> bool
     """Determine if deep thinking should be triggered for a question."""
     if not settings.deep_thinking_enabled:
         return False
-
     if not settings.deep_thinking_auto_trigger:
-        return False
-
-    if confidence < settings.deep_thinking_auto_trigger_confidence_threshold:
         return False
 
     complex_keywords = {

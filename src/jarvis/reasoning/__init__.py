@@ -75,7 +75,6 @@ class ReasoningStrategyBase(ABC):
         started = time.perf_counter()
         resp = llm.invoke(prompt)
         text = getattr(resp, "content", "") or ""
-        tokens = len(text.split())
         latency_ms = int((time.perf_counter() - started) * 1000)
         return text, latency_ms
 

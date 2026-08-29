@@ -71,7 +71,22 @@ def deep_think(state: JarvisState) -> JarvisState:
         state["warning"] = f"Deep thinking failed: {exc}"
         return state
 
+    max_steps = max(1, settings.deep_thinking_max_reasoning_steps)
+
     steps = result.metadata.get("steps", [])
+    if isinstance(steps, int):
+        steps = [
+            {
+                "step_number": i + 1,
+                "description": "reasoning",
+                "sub_problem": question,
+                "analysis": result.reasoning,
+                "conclusion": result.answer,
+                "confidence": result.confidence,
+                "citations": [],
+            }
+            for i in range(min(steps, max_steps))
+        ]
     if not steps and result.reasoning:
         steps = [{
             "step_number": 1,
@@ -83,8 +98,8 @@ def deep_think(state: JarvisState) -> JarvisState:
             "citations": [],
         }]
 
-    max_steps = max(1, settings.deep_thinking_max_reasoning_steps)
-    steps = steps[:max_steps]
+    if isinstance(steps, list):
+        steps = steps[:max_steps]
 
     state["reasoning_chain"] = steps
     state["reasoning_sub_problems"] = result.metadata.get("sub_problems", [])

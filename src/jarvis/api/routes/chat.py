@@ -506,6 +506,7 @@ def _build_response(session_id: str, result: dict) -> ChatResponse:
         reasoning_strategy=result.get("reasoning_strategy"),
         reasoning_chain_visible=result.get("reasoning_chain_visible", False),
         reasoning_steps=result.get("reasoning_steps", 0),
+        reasoning_chain=result.get("reasoning_chain"),
         tokens_used_reasoning=result.get("tokens_used_reasoning", 0),
         tokens_used_answer=result.get("tokens_used_answer", 0),
         total_tokens=result.get("total_tokens", 0),

@@ -65,6 +65,7 @@ class ChatResponse(BaseModel):
     reasoning_strategy: str | None = None
     reasoning_chain_visible: bool = False
     reasoning_steps: int = 0
+    reasoning_chain: list[dict] | None = None
     tokens_used_reasoning: int = 0
     tokens_used_answer: int = 0
     total_tokens: int = 0

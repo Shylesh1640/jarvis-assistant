@@ -12,7 +12,6 @@ from typing import Any
 from fastapi import APIRouter, Request
 
 from jarvis.ab_testing.manager import (
-    ABTestConfig,
     ABTestManager,
     MetricEvent,
     VARIANT_A,
