@@ -1,0 +1,73 @@
+{
+  "generated_at": "2026-08-28T17:22:50.613563+00:00",
+  "period_days": 90,
+  "total_records": 1,
+  "by_strategy": {
+    "cot": {
+      "count": 1,
+      "accuracy": {
+        "correctness": 0.9,
+        "expected_match": 0.85,
+        "human_eval_score": 0.88
+      },
+      "reasoning_quality": {
+        "logical_consistency": 0.92,
+        "completeness": 0.87,
+        "relevance": 0.91
+      },
+      "efficiency": {
+        "tokens_reasoning": 150.0,
+        "tokens_answer": 50.0,
+        "latency_ms": 1200.0,
+        "cost_usd": 0.002
+      },
+      "user_satisfaction": {
+        "thumbs_up": 8,
+        "thumbs_down": 2,
+        "satisfaction_rate": 0.8,
+        "perceived_helpfulness": 0.85
+      }
+    }
+  },
+  "by_task_type": {
+    "coding": {
+      "count": 1,
+      "accuracy": {
+        "correctness": 0.9,
+        "expected_match": 0.85,
+        "human_eval_score": 0.88
+      },
+      "reasoning_quality": {
+        "logical_consistency": 0.92,
+        "completeness": 0.87,
+        "relevance": 0.91
+      },
+      "efficiency": {
+        "tokens_reasoning": 150.0,
+        "tokens_answer": 50.0,
+        "latency_ms": 1200.0,
+        "cost_usd": 0.002
+      },
+      "user_satisfaction": {
+        "thumbs_up": 8,
+        "thumbs_down": 2,
+        "satisfaction_rate": 0.8,
+        "perceived_helpfulness": 0.85
+      }
+    }
+  },
+  "comparisons": [],
+  "deep_vs_standard": {
+    "deep_thinking": {
+      "count": 0
+    },
+    "standard": {
+      "count": 0
+    },
+    "delta": {
+      "accuracy": 0.0,
+      "latency_ms": 0.0,
+      "satisfaction": 0.0
+    }
+  }
+}

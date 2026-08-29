@@ -1,0 +1,123 @@
+{
+  "generated_at": "2026-08-28T17:21:33.843773+00:00",
+  "period_days": 30,
+  "total_records": 2,
+  "by_strategy": {
+    "cot": {
+      "count": 1,
+      "accuracy": {
+        "correctness": 0.9,
+        "expected_match": 0.85,
+        "human_eval_score": 0.88
+      },
+      "reasoning_quality": {
+        "logical_consistency": 0.92,
+        "completeness": 0.87,
+        "relevance": 0.91
+      },
+      "efficiency": {
+        "tokens_reasoning": 150.0,
+        "tokens_answer": 50.0,
+        "latency_ms": 1200.0,
+        "cost_usd": 0.002
+      },
+      "user_satisfaction": {
+        "thumbs_up": 8,
+        "thumbs_down": 2,
+        "satisfaction_rate": 0.8,
+        "perceived_helpfulness": 0.85
+      }
+    },
+    "tot": {
+      "count": 1,
+      "accuracy": {
+        "correctness": 0.95,
+        "expected_match": 0.9,
+        "human_eval_score": 0.92
+      },
+      "reasoning_quality": {
+        "logical_consistency": 0.88,
+        "completeness": 0.93,
+        "relevance": 0.89
+      },
+      "efficiency": {
+        "tokens_reasoning": 300.0,
+        "tokens_answer": 60.0,
+        "latency_ms": 2500.0,
+        "cost_usd": 0.004
+      },
+      "user_satisfaction": {
+        "thumbs_up": 9,
+        "thumbs_down": 1,
+        "satisfaction_rate": 0.9,
+        "perceived_helpfulness": 0.9
+      }
+    }
+  },
+  "by_task_type": {
+    "coding": {
+      "count": 2,
+      "accuracy": {
+        "correctness": 0.925,
+        "expected_match": 0.875,
+        "human_eval_score": 0.9
+      },
+      "reasoning_quality": {
+        "logical_consistency": 0.9,
+        "completeness": 0.9,
+        "relevance": 0.9
+      },
+      "efficiency": {
+        "tokens_reasoning": 225.0,
+        "tokens_answer": 55.0,
+        "latency_ms": 1850.0,
+        "cost_usd": 0.003
+      },
+      "user_satisfaction": {
+        "thumbs_up": 17,
+        "thumbs_down": 3,
+        "satisfaction_rate": 0.85,
+        "perceived_helpfulness": 0.875
+      }
+    }
+  },
+  "comparisons": [
+    {
+      "task_type": "coding",
+      "strategies": [
+        "cot",
+        "tot"
+      ],
+      "best_strategy": "",
+      "metrics_summary": {
+        "cot": {
+          "accuracy": 0.9,
+          "reasoning_quality": 0.92,
+          "efficiency": 1200.0,
+          "satisfaction": 0.8,
+          "count": 1
+        },
+        "tot": {
+          "accuracy": 0.95,
+          "reasoning_quality": 0.88,
+          "efficiency": 2500.0,
+          "satisfaction": 0.9,
+          "count": 1
+        }
+      }
+    }
+  ],
+  "deep_vs_standard": {
+    "deep_thinking": {
+      "count": 0
+    },
+    "standard": {
+      "count": 0
+    },
+    "delta": {
+      "accuracy": 0.0,
+      "latency_ms": 0.0,
+      "satisfaction": 0.0
+    }
+  }
+}

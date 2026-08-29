@@ -431,4 +431,5 @@ __all__ = [
     "build_final_messages",
     "build_final_chat_dicts",
     "build_retrieval_query",
+    "_format_reasoning_chain",
 ]

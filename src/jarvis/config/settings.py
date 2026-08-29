@@ -450,6 +450,18 @@ class Settings(BaseSettings):
     # Enable Fast-and-Slow reasoning.
     reasoning_strategy_fast_and_slow_enabled: bool = True
 
+    # --- Phase 13 :: A/B testing for reasoning strategies ---
+    # Master switch for A/B testing of reasoning strategies. When False,
+    # traffic splitting always routes to the control (variant A) and metric
+    # analysis reports are suppressed from the API/CLI.
+    ab_testing_reasoning_enabled: bool = True
+    # Minimum number of samples required per variant before a test is
+    # considered to have enough data to declare a winner.
+    ab_testing_min_samples_per_variant: int = 50
+    # Statistical significance threshold (alpha) for the z-test / chi-square
+    # analysis. A p-value at or below this is treated as significant.
+    ab_testing_significance_threshold: float = 0.05
+
     # --- Phase 7 :: deployment profile ---
     # One of: local | single_host | production. Drives safe defaults and
     # validation (see jarvis.config.deployment). local = localhost-only dev;

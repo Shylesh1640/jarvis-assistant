@@ -1,0 +1,21 @@
+{
+  "generated_at": "2026-08-28T17:20:51.134281+00:00",
+  "period_days": 90,
+  "total_records": 0,
+  "by_strategy": {},
+  "by_task_type": {},
+  "comparisons": [],
+  "deep_vs_standard": {
+    "deep_thinking": {
+      "count": 0
+    },
+    "standard": {
+      "count": 0
+    },
+    "delta": {
+      "accuracy": 0.0,
+      "latency_ms": 0.0,
+      "satisfaction": 0.0
+    }
+  }
+}

@@ -13,6 +13,7 @@ from jarvis.orchestration.branches import (
     run_general_branch,
 )
 from jarvis.orchestration.context_node import build_context
+from jarvis.orchestration.deep_think import deep_think
 from jarvis.orchestration.planning_node import plan_task
 from jarvis.orchestration.router_node import classify_intent
 from jarvis.orchestration.state import JarvisState
@@ -104,6 +105,7 @@ def build_graph():
     graph.add_node("classify_intent", classify_intent)
     graph.add_node("plan_task", plan_task)
     graph.add_node("build_context", build_context)
+    graph.add_node("deep_think", deep_think)
     graph.add_node("general_llm", run_general_branch)
     graph.add_node("coding_llm", run_coding_branch)
     graph.add_node("check_risk", check_risk)
@@ -115,9 +117,10 @@ def build_graph():
     graph.set_entry_point("classify_intent")
     graph.add_edge("classify_intent", "plan_task")
     graph.add_edge("plan_task", "build_context")
+    graph.add_edge("build_context", "deep_think")
 
     graph.add_conditional_edges(
-        "build_context",
+        "deep_think",
         route_decision,
         {
             "general": "general_llm",
@@ -146,7 +149,7 @@ def build_graph():
         "general_llm": "general_llm",
     })
 
-    logger.info("Graph built with approval nodes + tool loops + checkpointer")
+    logger.info("Graph built with approval nodes + tool loops + checkpointer + deep_think")
     return graph.compile(checkpointer=InMemorySaver())
 
 
