@@ -238,7 +238,10 @@ def _two_sample_z_test(
     var_b = sum((x - mean_b) ** 2 for x in b) / (n_b - 1)
     se = math.sqrt(var_a / n_a + var_b / n_b)
     if se == 0.0:
-        return 0.0, 1.0
+        if mean_a == mean_b:
+            return 0.0, 1.0
+        z = float("inf") if mean_a > mean_b else float("-inf")
+        return z, 0.0
     z = (mean_a - mean_b) / se
     # two-tailed p-value
     p = 2.0 * (1.0 - _normal_cdf(abs(z)))
