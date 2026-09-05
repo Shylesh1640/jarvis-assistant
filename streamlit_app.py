@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import uuid
 from datetime import datetime, timezone
 
 import httpx
@@ -39,10 +40,27 @@ TASKS_URL = f"{BASE_URL}/tasks"
 RUNTIME_URL = f"{BASE_URL}/runtime"
 TRACES_URL = f"{BASE_URL}/traces/recent"
 
+
+def _get_session_id() -> str:
+    """Return a unique session ID for this browser session.
+
+    Each Streamlit browser session gets its own stable UUID so that
+    multiple users/tabs never share conversation state. The "default"
+    session ID is only used when JARVIS_DEBUG_DEFAULT_SESSION=true is set
+    (for local debugging only).
+    """
+    if os.environ.get("JARVIS_DEBUG_DEFAULT_SESSION", "").lower() == "true":
+        return "default"
+    if "session_id" not in st.session_state:
+        st.session_state.session_id = str(uuid.uuid4())
+    return st.session_state.session_id
+
+
 # Session id this UI presents to the backend. Every request carries the
 # bearer token issued for it so REQUIRE_SESSION_TOKEN stays a config-only
-# switch for the operator.
-SESSION_ID = os.environ.get("JARVIS_SESSION_ID", "default")
+# switch for the operator. Unique per browser session to prevent
+# cross-user conversation leakage and stale state.
+SESSION_ID = _get_session_id()
 
 SUGGESTIONS = {
     "Explain an idea": "Explain how retrieval-augmented generation works, simply.",
