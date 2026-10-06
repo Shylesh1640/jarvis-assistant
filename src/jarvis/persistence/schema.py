@@ -24,7 +24,7 @@ from sqlalchemy.engine import Engine
 logger = logging.getLogger("jarvis.persistence.schema")
 
 SCHEMA_VERSION_TABLE = "schema_version"
-LATEST_SCHEMA_VERSION = 1
+LATEST_SCHEMA_VERSION = 3
 
 # Additive migration for the `sessions` table (Phase 6 token security). Moved
 # here from ``engine.ensure_schema`` so it is tracked by the versioning.
@@ -35,6 +35,16 @@ _NEW_SESSION_COLUMNS: dict[str, dict[str, str]] = {
     "token_expires_at": {"sqlite": "DATETIME", "postgresql": "TIMESTAMP"},
     "token_rotated_at": {"sqlite": "DATETIME", "postgresql": "TIMESTAMP"},
     "token_revoked_at": {"sqlite": "DATETIME", "postgresql": "TIMESTAMP"},
+}
+
+# Phase 11 user management columns
+_USER_AUTH_COLUMNS: dict[str, dict[str, str]] = {
+    "user_id": {"sqlite": "VARCHAR(128)", "postgresql": "VARCHAR(128)"},
+}
+
+# Phase 8+ task enhancements
+_TASK_COLUMNS: dict[str, dict[str, str]] = {
+    "stage": {"sqlite": "TEXT", "postgresql": "TEXT"},
 }
 
 
@@ -60,8 +70,61 @@ def _migration_v1(engine: Engine) -> None:
         logger.info("Schema migration v1: added %s to sessions", ", ".join(added))
 
 
+def _migration_v2(engine: Engine) -> None:
+    """Add user_id column to sessions for Phase 11 user management (idempotent)."""
+    insp = inspect(engine)
+
+    # Check if sessions table exists
+    if "sessions" not in insp.get_table_names():
+        logger.info("Schema migration v2: sessions table does not exist yet, skipping")
+        return
+
+    existing = {c["name"] for c in insp.get_columns("sessions")}
+    dialect = engine.dialect.name
+    added: list[str] = []
+
+    for col, types in _USER_AUTH_COLUMNS.items():
+        if col in existing:
+            continue
+        ddl_type = types.get(dialect) or types["sqlite"]
+        with engine.begin() as conn:
+            # Add as nullable since existing sessions won't have a user_id
+            conn.execute(text(f"ALTER TABLE sessions ADD COLUMN {col} {ddl_type} NULL"))
+        added.append(col)
+
+    if added:
+        logger.info("Schema migration v2: added %s to sessions", ", ".join(added))
+
+
+def _migration_v3(engine: Engine) -> None:
+    """Add stage column to tasks for progress tracking (idempotent)."""
+    insp = inspect(engine)
+
+    # Check if tasks table exists
+    if "tasks" not in insp.get_table_names():
+        logger.info("Schema migration v3: tasks table does not exist yet, skipping")
+        return
+
+    existing = {c["name"] for c in insp.get_columns("tasks")}
+    dialect = engine.dialect.name
+    added: list[str] = []
+
+    for col, types in _TASK_COLUMNS.items():
+        if col in existing:
+            continue
+        ddl_type = types.get(dialect) or types["sqlite"]
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE tasks ADD COLUMN {col} {ddl_type} NULL"))
+        added.append(col)
+
+    if added:
+        logger.info("Schema migration v3: added %s to tasks", ", ".join(added))
+
+
 MIGRATIONS: dict[int, Callable[[Engine], None]] = {
     1: _migration_v1,
+    2: _migration_v2,
+    3: _migration_v3,
 }
 
 

@@ -28,7 +28,36 @@ import streamlit as st
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("streamlit")
 
-BASE_URL = os.environ.get("BACKEND_URL", "http://localhost:8000")
+# Auto-detect backend URL with fallback
+def _get_backend_url() -> str:
+    """Auto-detect backend URL with Docker and localhost fallback."""
+    env_url = os.environ.get("BACKEND_URL", "").strip()
+
+    # Try environment variable first
+    if env_url:
+        try:
+            test_url = f"{env_url}/health"
+            response = httpx.get(test_url, timeout=2)
+            if response.status_code == 200:
+                logger.info(f"Using backend URL from environment: {env_url}")
+                return env_url
+        except Exception:
+            logger.warning(f"Backend at {env_url} not reachable, trying localhost...")
+
+    # Fallback to localhost
+    localhost_url = "http://localhost:8000"
+    try:
+        response = httpx.get(f"{localhost_url}/health", timeout=2)
+        if response.status_code == 200:
+            logger.info(f"Using localhost backend: {localhost_url}")
+            return localhost_url
+    except Exception:
+        pass
+
+    # Return best guess (will show connection error in UI)
+    return env_url or localhost_url
+
+BASE_URL = _get_backend_url()
 API_URL = f"{BASE_URL}/chat"
 HEALTH_URL = f"{BASE_URL}/health"
 MODELS_URL = f"{BASE_URL}/models"
@@ -39,6 +68,10 @@ DOCS_REINDEX_URL = f"{BASE_URL}/documents/reindex"
 TASKS_URL = f"{BASE_URL}/tasks"
 RUNTIME_URL = f"{BASE_URL}/runtime"
 TRACES_URL = f"{BASE_URL}/traces/recent"
+
+# Connection retry settings
+MAX_RETRIES = 3
+RETRY_DELAY = 2
 
 
 def _get_session_id() -> str:
@@ -93,13 +126,21 @@ def fetch_models() -> dict | None:
         return None
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def fetch_health() -> dict | None:
+    """Fetch backend health status including Ollama connectivity."""
     try:
-        r = httpx.get(HEALTH_URL, timeout=3)
+        r = httpx.get(HEALTH_URL, timeout=5)
         r.raise_for_status()
         return r.json()
-    except Exception:
+    except httpx.ConnectError:
+        logger.error("Backend not reachable at %s", BASE_URL)
+        return None
+    except httpx.TimeoutException:
+        logger.error("Backend health check timed out")
+        return None
+    except Exception as exc:
+        logger.error("Health check failed: %s", exc)
         return None
 
 
@@ -592,56 +633,135 @@ def _send_message(
 
     with st.chat_message("assistant", avatar=":material/smart_toy:"):
         with st.spinner("Thinking..."):
-            try:
-                payload = {
-                    "session_id": SESSION_ID,
-                    "session_token": session_token(SESSION_ID),
-                    "message": text,
-                    "history": history,
-                    "selected_text": selected_text or None,
-                    "approved": approved,
-                    "show_reasoning": show_reasoning,
-                    "answer_style": answer_style if answer_style != "default" else None,
-                    "deep_thinking": deep_thinking,
-                    "show_reasoning_chain": show_reasoning_chain,
-                    "reasoning_strategy": reasoning_strategy if reasoning_strategy != "auto" else None,
-                }
-                resp = httpx.post(API_URL, json=payload, timeout=300)
-                resp.raise_for_status()
-                data = resp.json()
-                answer = data["response"]
-
-                _render_assistant_meta(_assistant_record(answer, data), debug=debug)
-                st.markdown(answer)
-
-                if background and not data.get("approval_required") and not approved:
-                    st.toast("Note: toggling 'Run as background task' posts a /tasks job next time.",
-                             icon=":material/info:")
-
-                if data.get("approval_required"):
-                    st.session_state.pending_action = data.get("pending_action")
-                    st.session_state.pending_tool_calls = list(data.get("pending_tool_calls") or [])
-                    st.session_state.approval_id = data.get("approval_id")
-                    st.session_state.approval_expires_at = data.get("approval_expires_at")
-                    logger.info("Approval required: %s", data.get("pending_action"))
-                else:
-                    _clear_pending_approval()
-            except httpx.HTTPStatusError as exc:
+            # Retry logic for transient failures
+            last_error = None
+            for attempt in range(MAX_RETRIES):
                 try:
-                    body = exc.response.json()
-                    err = body.get("error", "request_failed")
-                    msg = body.get("message", str(exc))
-                    action = f"\n\n> Suggested: {body.get('suggested_action')}" if body.get("suggested_action") else ""
-                    answer = f"**{err}** — {msg}{action}"
-                except Exception:  # noqa: BLE001
-                    answer = f"Backend error ({exc.response.status_code}): {exc}"
-                st.error(answer, icon=":material/error:")
-            except httpx.TimeoutException:
-                answer = "This request is taking too long in interactive mode. Toggle 'Run as background task' for heavy prompts."
-                st.error(answer, icon=":material/schedule:")
-            except Exception as exc:  # noqa: BLE001
-                answer = f"Error contacting backend: {exc}"
-                st.error(answer, icon=":material/error:")
+                    payload = {
+                        "session_id": SESSION_ID,
+                        "session_token": session_token(SESSION_ID),
+                        "message": text,
+                        "history": history,
+                        "selected_text": selected_text or None,
+                        "approved": approved,
+                        "show_reasoning": show_reasoning,
+                        "answer_style": answer_style if answer_style != "default" else None,
+                        "deep_thinking": deep_thinking,
+                        "show_reasoning_chain": show_reasoning_chain,
+                        "reasoning_strategy": reasoning_strategy if reasoning_strategy != "auto" else None,
+                    }
+                    resp = httpx.post(API_URL, json=payload, timeout=300)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    answer = data["response"]
+
+                    _render_assistant_meta(_assistant_record(answer, data), debug=debug)
+                    st.markdown(answer)
+
+                    if background and not data.get("approval_required") and not approved:
+                        st.toast("Note: toggling 'Run as background task' posts a /tasks job next time.",
+                                 icon=":material/info:")
+
+                    if data.get("approval_required"):
+                        st.session_state.pending_action = data.get("pending_action")
+                        st.session_state.pending_tool_calls = list(data.get("pending_tool_calls") or [])
+                        st.session_state.approval_id = data.get("approval_id")
+                        st.session_state.approval_expires_at = data.get("approval_expires_at")
+                        logger.info("Approval required: %s", data.get("pending_action"))
+                    else:
+                        _clear_pending_approval()
+
+                    # Success - break retry loop
+                    break
+
+                except httpx.ConnectError as exc:
+                    last_error = exc
+                    if attempt < MAX_RETRIES - 1:
+                        st.warning(f"Connection failed (attempt {attempt + 1}/{MAX_RETRIES}), retrying...", icon=":material/warning:")
+                        time.sleep(RETRY_DELAY)
+                        continue
+                    answer = f"""**Backend Connection Failed**
+
+The backend at `{BASE_URL}` is not reachable.
+
+**Possible causes:**
+- Backend container is not running
+- Backend is starting up (wait a moment and try again)
+- Ollama is not accessible from backend
+- Network connectivity issues
+
+**Try:**
+1. Check if backend is running: `docker ps | grep jarvis-backend`
+2. Check backend logs: `docker logs jarvis-backend`
+3. Restart backend: `docker compose restart backend`
+4. Check Ollama is running on host: `ollama ps`
+
+**Error details:** {exc}"""
+                    st.error(answer, icon=":material/error:")
+
+                except httpx.HTTPStatusError as exc:
+                    try:
+                        body = exc.response.json()
+                        err = body.get("error", "request_failed")
+                        msg = body.get("message", str(exc))
+                        action = f"\n\n> **Suggested:** {body.get('suggested_action')}" if body.get('suggested_action') else ""
+                        answer = f"**{err}** — {msg}{action}"
+                    except Exception:  # noqa: BLE001
+                        if exc.response.status_code == 502:
+                            answer = f"""**502 Bad Gateway**
+
+The backend service is unavailable or not responding.
+
+**Common causes:**
+- Backend container crashed or restarting
+- Backend initialization failed (check logs)
+- Database connectivity issues
+- Ollama not accessible from backend
+
+**Quick fix:**
+```bash
+# Check backend logs
+docker logs jarvis-backend --tail 50
+
+# Restart backend
+docker compose restart backend
+
+# Or rebuild if needed
+docker compose up -d --build backend
+```"""
+                        elif exc.response.status_code == 503:
+                            answer = f"""**503 Service Unavailable**
+
+The backend is running but Ollama is not reachable.
+
+**Fix:**
+1. Ensure Ollama is running on host: `ollama ps`
+2. Verify Ollama is accessible: `curl http://localhost:11434/api/tags`
+3. Restart backend: `docker compose restart backend`"""
+                        else:
+                            answer = f"Backend error ({exc.response.status_code}): {exc}"
+                    st.error(answer, icon=":material/error:")
+                    break  # Don't retry HTTP errors
+
+                except httpx.TimeoutException:
+                    answer = "This request is taking too long in interactive mode. Toggle 'Run as background task' for heavy prompts."
+                    st.error(answer, icon=":material/schedule:")
+                    break  # Don't retry timeouts
+
+                except Exception as exc:  # noqa: BLE001
+                    last_error = exc
+                    if attempt < MAX_RETRIES - 1:
+                        st.warning(f"Request failed (attempt {attempt + 1}/{MAX_RETRIES}), retrying...", icon=":material/warning:")
+                        time.sleep(RETRY_DELAY)
+                        continue
+                    answer = f"""**Error contacting backend:** {exc}
+
+**Troubleshooting:**
+- Backend URL: `{BASE_URL}`
+- Check backend is running: `docker ps`
+- Check backend logs: `docker logs jarvis-backend`
+- Try restarting: `docker compose restart`"""
+                    st.error(answer, icon=":material/error:")
 
     if text:
         st.session_state.messages.append(_assistant_record(answer, data if "data" in locals() else {}))
@@ -854,12 +974,101 @@ with st.sidebar:
     st.header("Jarvis Assistant")
     st.caption("Local-first hybrid AI assistant")
 
+    # Connection status section
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        st.caption(f"**Backend:** `{BASE_URL}`")
+    with col2:
+        if st.button("🔄", help="Refresh connection status"):
+            st.cache_data.clear()
+            st.rerun()
+
     health = fetch_health()
     if health and health.get("status") == "ok":
         st.badge("Backend online", icon=":material/check_circle:", color="green")
+
+        # Show Ollama status
+        if health.get("ollama_reachable"):
+            st.badge("Ollama connected", icon=":material/check_circle:", color="green")
+        else:
+            st.badge("Ollama offline", icon=":material/error:", color="red")
+            with st.expander("⚠️ Ollama Issue - Click to fix", expanded=False):
+                st.error("Ollama is not reachable from the backend.")
+                st.markdown("""
+**If using Docker:**
+```bash
+# On host, ensure Ollama is running
+ollama serve
+
+# Check it's accessible
+ollama ps
+
+# Restart backend container
+docker compose restart backend
+```
+
+**If using local:**
+```bash
+# Start Ollama
+ollama serve
+
+# Restart backend
+# Press Ctrl+C and restart uvicorn
+```
+""")
     else:
         st.badge("Backend offline", icon=":material/error:", color="red")
-        st.caption(f"Expected at {BASE_URL}")
+
+        with st.expander("❌ Backend Connection Failed - Click to fix", expanded=True):
+            st.error(f"Cannot connect to backend at: `{BASE_URL}`")
+            st.markdown("""
+**If using Docker:**
+```bash
+# Check if containers are running
+docker ps | grep jarvis
+
+# Check backend logs
+docker logs jarvis-backend --tail 50
+
+# Restart services
+docker compose restart
+
+# Or rebuild
+docker compose up -d --build
+```
+
+**If using local:**
+```bash
+# Start backend
+uv run uvicorn jarvis.api.main:app --reload --app-dir src
+
+# Check health
+curl http://localhost:8000/health
+```
+
+**Quick diagnostics:**
+```bash
+# Test backend directly
+curl {BASE_URL}/health
+
+# Check if port is in use
+netstat -an | findstr "8000"
+```
+""")
+
+            # Add manual backend URL override
+            st.divider()
+            st.caption("**Manual Backend URL Override**")
+            new_url = st.text_input(
+                "Backend URL",
+                value=BASE_URL,
+                placeholder="http://localhost:8000",
+                help="Override BACKEND_URL if auto-detection failed"
+            )
+            if st.button("Update & Reconnect"):
+                os.environ["BACKEND_URL"] = new_url
+                st.cache_data.clear()
+                st.rerun()
 
     st.subheader("Model configuration", divider=False)
     cfg = fetch_models()

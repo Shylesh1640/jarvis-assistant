@@ -17,12 +17,17 @@ has chosen a single model, so at most one local generation model is built
 (and thus loaded) per request.
 """
 import logging
+from functools import lru_cache
+from typing import Optional
 
 from langchain_ollama import ChatOllama
 
 from jarvis.config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+# Cache for model clients to avoid redundant initialization
+_model_cache: dict[tuple[str, float, bool, Optional[int]], ChatOllama] = {}
 
 
 def _runtime_options() -> dict:
@@ -75,7 +80,28 @@ def _build(
     ``num_gpu`` overrides ``settings.ollama_num_gpu`` when provided (used by
     the Phase 6 GPU policy to honour require/prefer/allow semantics). The
     model name is never replaced by runtime options.
+
+    Validates Ollama connectivity and model availability before creating client.
+    Results are cached to avoid redundant initialization.
     """
+    # Validate Ollama is available
+    from jarvis.models.ollama_connection import check_ollama_available
+
+    is_available, error_msg = check_ollama_available()
+    if not is_available:
+        logger.error("Ollama unavailable when building model %s: %s", model_name, error_msg)
+        raise ConnectionError(
+            error_msg or f"Ollama is not reachable at {settings.ollama_base_url}"
+        )
+
+    # Build cache key (json_mode doesn't affect client, only opts)
+    cache_key = (model_name, temperature, force_cpu, num_gpu)
+
+    # Return cached client if available
+    if cache_key in _model_cache:
+        logger.debug("Using cached ChatOllama client for %s", model_name)
+        return _model_cache[cache_key]
+
     opts = _runtime_options()
     opts["model"] = model_name
     opts["base_url"] = settings.ollama_base_url
@@ -87,7 +113,21 @@ def _build(
         opts["num_gpu"] = 0
     elif num_gpu is not None:
         opts["num_gpu"] = num_gpu
-    return ChatOllama(**opts)
+
+    try:
+        client = ChatOllama(**opts)
+        # Cache the client for reuse
+        _model_cache[cache_key] = client
+        logger.debug("Created and cached new ChatOllama client for %s", model_name)
+        return client
+    except Exception as exc:
+        logger.error(
+            "Failed to create ChatOllama client for model %s: %s",
+            model_name,
+            exc,
+            exc_info=True,
+        )
+        raise RuntimeError(f"Failed to initialize model {model_name}: {exc}") from exc
 
 
 def get_general_model(temperature: float = 0.4, *, force_cpu: bool = False) -> ChatOllama:
@@ -140,8 +180,20 @@ def get_model_named(
     return _build(model_name, temp, force_cpu=force_cpu, num_gpu=num_gpu)
 
 
+def clear_model_cache():
+    """Clear the model client cache.
+
+    Useful when switching models or after connection issues to force
+    recreation of clients.
+    """
+    global _model_cache
+    _model_cache.clear()
+    logger.info("Cleared ChatOllama client cache")
+
+
 __all__ = [
     "get_general_model",
     "get_model_named",
     "get_router_model",
+    "clear_model_cache",
 ]

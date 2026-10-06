@@ -47,20 +47,34 @@ logging.basicConfig(
 def _startup() -> None:
     """Idempotent one-time initialisation (tables, TTL sweep, task recovery)."""
     _log_deployment_warnings()
+
+    # STEP 1: Initialize database first (creates tables + runs migrations)
     try:
         from jarvis.persistence import create_all
+
+        logging.getLogger("jarvis.api").info("Initializing database...")
+        create_all()
+        logging.getLogger("jarvis.api").info("✓ Database initialized and migrations applied")
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger("jarvis.api").error("❌ DB init failed: %s", exc, exc_info=True)
+
+    # STEP 2: Database maintenance (now safe to query)
+    try:
         from jarvis.persistence.repo import repos
 
-        create_all()
-        repos.approvals.purge_expired()
+        purged = repos.approvals.purge_expired()
+        if purged:
+            logging.getLogger("jarvis.api").info("Purged %d expired approval(s)", purged)
     except Exception as exc:  # noqa: BLE001
-        logging.getLogger("jarvis.api").warning("DB init failed: %s", exc)
+        logging.getLogger("jarvis.api").warning("Approval purge failed: %s", exc)
+
     try:
         from jarvis.tasks.maintenance import sweep_once
 
         sweep_once()
     except Exception as exc:  # noqa: BLE001
         logging.getLogger("jarvis.api").warning("Startup maintenance sweep failed: %s", exc)
+
     try:
         from jarvis.tasks.runner import recover_stale_tasks
 
@@ -71,6 +85,7 @@ def _startup() -> None:
             )
     except Exception as exc:  # noqa: BLE001
         logging.getLogger("jarvis.api").warning("Stale-task recovery failed: %s", exc)
+
     try:
         from jarvis.tasks.reminders import scan_once
 
@@ -81,6 +96,42 @@ def _startup() -> None:
             )
     except Exception as exc:  # noqa: BLE001
         logging.getLogger("jarvis.api").warning("Startup reminder scan failed: %s", exc)
+
+    # STEP 3: Check Ollama connectivity (after DB is ready)
+    try:
+        from jarvis.models.ollama_connection import check_ollama_available
+
+        is_available, error_msg = check_ollama_available()
+        if is_available:
+            logging.getLogger("jarvis.api").info("✓ Ollama is reachable at %s", settings.ollama_base_url)
+        else:
+            logging.getLogger("jarvis.api").warning(
+                "⚠ Ollama is NOT reachable: %s - Local model requests will fail until Ollama is started",
+                error_msg
+            )
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger("jarvis.api").warning("Could not check Ollama status: %s", exc)
+
+    # STEP 4: Verify critical models are available
+    try:
+        from jarvis.models.ollama_connection import get_connection_manager
+
+        manager = get_connection_manager()
+        critical_models = [
+            settings.general_model,
+            settings.coding_model,
+        ]
+        if settings.use_strong_local:
+            critical_models.append(settings.strong_local_model)
+
+        for model in critical_models:
+            exists, error = manager.verify_model_exists(model)
+            if not exists:
+                logging.getLogger("jarvis.api").warning("⚠ Model '%s' not found: %s", model, error)
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger("jarvis.api").warning("Could not verify models: %s", exc)
+
+    logging.getLogger("jarvis.api").info("✓ Startup complete")
 
 
 def _log_deployment_warnings() -> None:

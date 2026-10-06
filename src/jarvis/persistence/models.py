@@ -25,8 +25,9 @@ class SessionRow(Base):
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
     # Optional user identifier reserved for future auth.
+    # Foreign key is optional to allow sessions before user management is enabled
     user_id: Mapped[str | None] = mapped_column(
-        String(128), ForeignKey("users.user_id"), nullable=True
+        String(128), nullable=True
     )
     # Per-session bearer token used to prevent cross-session access when
     # ``settings.require_session_token`` is enabled.
@@ -72,7 +73,8 @@ class SessionRow(Base):
         cascade="all, delete-orphan",
         order_by="SummaryRow.id",
     )
-    user: Mapped["UserRow"] = relationship("UserRow", back_populates="sessions", foreign_keys=[user_id])
+    # User relationship is optional - will be None if user management not enabled
+    # user: Mapped["UserRow"] = relationship("UserRow", back_populates="sessions", foreign_keys=[user_id])
 
 
 class MessageRow(Base):
@@ -297,9 +299,10 @@ class UserRow(Base):
     last_totp_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     remember_device_token: Mapped[str | None] = mapped_column(String(256), nullable=True)
 
-    sessions: Mapped[list["SessionRow"]] = relationship(
-        back_populates="user", cascade="all, delete-orphan", order_by="SessionRow.created_at"
-    )
+    # Relationship to sessions - disabled until user management is fully enabled
+    # sessions: Mapped[list["SessionRow"]] = relationship(
+    #     back_populates="user", cascade="all, delete-orphan", order_by="SessionRow.created_at"
+    # )
     role: Mapped["RoleRow"] = relationship("RoleRow", back_populates="users", foreign_keys=[role_id])
 
 

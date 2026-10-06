@@ -44,14 +44,31 @@ class OllamaOutOfMemoryError(RuntimeError):
 def _classify_ollama_error(exc: Exception) -> tuple[str, type]:
     """Map a low-level exception to a friendly category + re-raised type."""
     msg = str(exc).lower()
-    if any(k in msg for k in ("connection", "refused", "unreachable", "max retries", "axioserror")):
+    exc_type = type(exc).__name__.lower()
+
+    # Connection errors - Ollama not running or unreachable
+    if (
+        any(k in msg for k in ("connection", "refused", "unreachable", "max retries", "axioserror", "cannot connect"))
+        or any(k in exc_type for k in ("connectionerror", "connecterror"))
+        or isinstance(exc, (ConnectionError, ConnectionRefusedError))
+    ):
         return "ollama_unavailable", OllamaUnavailableError
-    if any(k in msg for k in ("model not found", "model '", "not found", "does not exist")):
+
+    # Model not found - model doesn't exist in Ollama
+    if any(k in msg for k in ("model not found", "model '", "not found", "does not exist", "no such model")):
         return "model_not_found", OllamaModelLoadError
-    if any(k in msg for k in ("timeout", "timed out", "deadline exceeded")):
+
+    # Timeout errors
+    if (
+        any(k in msg for k in ("timeout", "timed out", "deadline exceeded", "read timeout"))
+        or "timeouterror" in exc_type
+    ):
         return "request_timeout", OllamaRequestTimeoutError
-    if any(k in msg for k in ("oom", "out of memory", "memory", "cuda", "blastohm", "llm.load_tensors")):
+
+    # Out of memory errors
+    if any(k in msg for k in ("oom", "out of memory", "memory", "cuda", "blastohm", "llm.load_tensors", "vram")):
         return "out_of_memory", OllamaOutOfMemoryError
+
     return "unknown_error", RuntimeError
 
 
@@ -108,6 +125,17 @@ def _invoke_branch_llm(
     * Permanent errors (missing model, non-retryable) raise immediately as
       their typed error.
     """
+    # Pre-flight check: verify Ollama is reachable before attempting generation
+    from jarvis.models.ollama_connection import check_ollama_available
+
+    is_available, error_msg = check_ollama_available()
+    if not is_available:
+        logger.error("%s branch: Ollama unavailable - %s", branch, error_msg)
+        raise OllamaUnavailableError(
+            error_msg or f"Ollama is not reachable at {settings.ollama_base_url}. "
+            "Please start Ollama with 'ollama serve' and try again."
+        )
+
     attempts = max(1, settings.retry_max_attempts)
     backoff = max(0.0, settings.retry_backoff_seconds)
     started = time.monotonic()

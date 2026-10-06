@@ -55,6 +55,12 @@ _pending_approvals: dict[str, dict] = {}
 
 _db_ready = False
 _db_lock = threading.Lock()
+_sessions_lock = threading.Lock()  # Protect _sessions dict
+_approvals_lock = threading.Lock()  # Protect _pending_approvals dict
+
+# Session cleanup settings
+_SESSION_CACHE_MAX_SIZE = 1000  # Maximum sessions to keep in memory
+_SESSION_MAX_HISTORY = 100  # Maximum messages per session in memory cache
 
 
 def _thread_id(session_id: str) -> str:
@@ -93,6 +99,59 @@ def _purge_expired_approvals() -> None:
         logger.debug("approval purge failed: %s", exc)
 
 
+def _cleanup_session_cache() -> None:
+    """Prevent memory leaks by limiting session cache size and history length.
+
+    Thread-safe with proper locking on shared data structures.
+    """
+    # Trim session cache if it grows too large
+    with _sessions_lock:
+        if len(_sessions) > _SESSION_CACHE_MAX_SIZE:
+            # Remove oldest sessions (simple FIFO eviction)
+            excess = len(_sessions) - _SESSION_CACHE_MAX_SIZE
+            keys_to_remove = list(_sessions.keys())[:excess]
+            for key in keys_to_remove:
+                del _sessions[key]
+            logger.info("Evicted %d old session(s) from memory cache", excess)
+
+        # Trim individual session histories
+        for session_id, history in list(_sessions.items()):
+            if len(history) > _SESSION_MAX_HISTORY:
+                _sessions[session_id] = history[-_SESSION_MAX_HISTORY:]
+                logger.debug(
+                    "Trimmed session %s history to %d messages",
+                    session_id,
+                    _SESSION_MAX_HISTORY,
+                )
+
+    # Clean up stale pending approvals (older than 1 hour)
+    import time
+    from datetime import datetime, timezone
+
+    stale_threshold = time.time() - 3600  # 1 hour ago
+    stale_approvals = []
+
+    with _approvals_lock:
+        for session_id, state in list(_pending_approvals.items()):
+            expires_at = state.get("approval_expires_at")
+            if expires_at:
+                try:
+                    dt = datetime.fromisoformat(expires_at)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    if dt.timestamp() < stale_threshold:
+                        stale_approvals.append(session_id)
+                except ValueError:
+                    stale_approvals.append(session_id)
+
+        for session_id in stale_approvals:
+            del _pending_approvals[session_id]
+            logger.debug("Removed stale pending approval for session %s", session_id)
+
+    if stale_approvals:
+        logger.info("Cleaned up %d stale pending approval(s)", len(stale_approvals))
+
+
 def _persist_message(
     session_id: str,
     *,
@@ -128,13 +187,17 @@ def _get_history(
     UI-driven clients such as Streamlit).  Falls back to the in-memory
     session cache, then to the durable message store so a conversation can
     be rebuilt after a backend restart.
+
+    Thread-safe with proper locking.
     """
-    if client_history:
-        _sessions[session_id] = list(client_history)
-        return client_history
-    cached = _sessions.get(session_id)
-    if cached is not None:
-        return cached
+    with _sessions_lock:
+        if client_history:
+            _sessions[session_id] = list(client_history)
+            return client_history
+        cached = _sessions.get(session_id)
+        if cached is not None:
+            return list(cached)  # Return a copy
+
     if _db_ready:
         try:
             db_history = _repos.messages.history(session_id)
@@ -144,7 +207,8 @@ def _get_history(
                     for m in db_history
                     if m.get("role") in ("user", "assistant")
                 ]
-                _sessions[session_id] = cached
+                with _sessions_lock:
+                    _sessions[session_id] = cached
                 return cached
         except Exception as exc:  # noqa: BLE001
             logger.warning("Loading DB history failed: %s", exc)
@@ -241,7 +305,8 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
         # Cancel any pending approval for this session — both the in-memory
         # fast path and the durable row — and mark it ``denied`` so a later
         # "approved" resume can never fire it.
-        prev_state = _pending_approvals.pop(payload.session_id, None)
+        with _approvals_lock:
+            prev_state = _pending_approvals.pop(payload.session_id, None)
         if prev_state is None:
             prev_state = _load_pending_approval(payload.session_id)
         if prev_state is None:
@@ -267,7 +332,8 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
 
     # --- Approval resume ---
     if payload.approved:
-        prev_state = _pending_approvals.pop(payload.session_id, None)
+        with _approvals_lock:
+            prev_state = _pending_approvals.pop(payload.session_id, None)
         if prev_state is None:
             prev_state = _load_pending_approval(payload.session_id)
         if prev_state is None:
@@ -299,6 +365,22 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
         return _build_response(payload.session_id, result)
 
     # --- Normal request ---
+    # Pre-flight check: Ensure Ollama is available before processing
+    from jarvis.models.ollama_connection import check_ollama_available
+
+    is_ollama_ok, ollama_error = check_ollama_available()
+    if not is_ollama_ok:
+        trace_event(tr, "error", category="ollama_unavailable_preflight")
+        finish_trace(tr)
+        logger.warning("Ollama preflight check failed: %s", ollama_error)
+        raise APIError(
+            503,
+            "ollama_unavailable",
+            ollama_error or "Ollama is not reachable. Please start Ollama and try again.",
+            retry_after_seconds=10,
+            suggested_action="Start Ollama with 'ollama serve' and retry.",
+        )
+
     is_valid, error = validate_input(payload.message)
     if not is_valid:
         trace_event(tr, f"input_rejected: {error}")
@@ -307,7 +389,9 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
 
     # A fresh, non-approved message supersedes any lingering approval
     # waiting on this session — the user has moved on to a new question.
-    if _pending_approvals.pop(payload.session_id, None) is not None:
+    with _approvals_lock:
+        had_pending = _pending_approvals.pop(payload.session_id, None) is not None
+    if had_pending:
         logger.info("Cleared stale pending approval for session %s", payload.session_id)
         trace_event(tr, "cleared_stale_approval")
     # Durable pending approvals for this session are superseded too
@@ -315,6 +399,7 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
     _cancel_durable_approval(payload.session_id)
 
     _purge_expired_approvals()
+    _cleanup_session_cache()  # Prevent memory leaks
     history = _get_history(payload.session_id, payload.history)
 
     selected_text = (payload.selected_text or "").strip()
@@ -360,7 +445,8 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
     # --- If approval is needed, store state for resume ---
     if result.get("approval_required"):
         logger.info("Storing pending approval for session %s", payload.session_id)
-        _pending_approvals[payload.session_id] = result
+        with _approvals_lock:
+            _pending_approvals[payload.session_id] = result
         _persist_approval(payload.session_id, result)
     else:
         _update_history(payload.session_id, payload.message, result)
@@ -462,12 +548,20 @@ def _error_from_exception(exc: Exception, tr) -> APIError:
 
 
 def _update_history(session_id: str, user_message: str, result: dict) -> None:
+    """Update conversation history in memory and persist to database.
+
+    Thread-safe with proper locking on shared session cache.
+    """
     safe_response = redact_output(result.get("final_response", ""))
-    session = _sessions.setdefault(session_id, [])
-    session.append({"role": "user", "content": user_message})
-    session.append({"role": "assistant", "content": safe_response})
+
+    with _sessions_lock:
+        session = _sessions.setdefault(session_id, [])
+        session.append({"role": "user", "content": user_message})
+        session.append({"role": "assistant", "content": safe_response})
+
     _persist_message(session_id, role="user", content=user_message)
     _persist_message(session_id, role="assistant", content=safe_response, result=result)
+
     try:
         maybe_summarize(session_id)
     except Exception as exc:  # noqa: BLE001
