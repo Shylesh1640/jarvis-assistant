@@ -1,0 +1,41 @@
+{
+  "easy_prompts": [
+    {
+      "name": "Simple Math",
+      "message": "What is 25 + 37?",
+      "expected": "Should use calculator tool and return 62"
+    },
+    {
+      "name": "Basic Question",
+      "message": "What is the capital of France?",
+      "expected": "Should answer Paris directly without tools"
+    },
+    {
+      "name": "Simple Calculation",
+      "message": "Calculate 15 * 8",
+      "expected": "Should use calculator and return 120"
+    }
+  ],
+  "complex_prompts": [
+    {
+      "name": "Multi-step Math",
+      "message": "Calculate (123 + 456) * 7, then divide the result by 3. Show me the steps.",
+      "expected": "Should use calculator multiple times and show reasoning"
+    },
+    {
+      "name": "Code Generation",
+      "message": "Write a Python function that checks if a string is a palindrome. Include error handling.",
+      "expected": "Should route to coding branch and generate clean code"
+    },
+    {
+      "name": "Algorithm Explanation",
+      "message": "Explain how the quicksort algorithm works with an example using the array [5, 2, 9, 1, 7]",
+      "expected": "Should provide detailed explanation with step-by-step breakdown"
+    },
+    {
+      "name": "Complex Reasoning",
+      "message": "If a train travels 120 km in 2 hours, then stops for 30 minutes, then travels another 90 km in 1.5 hours, what is the average speed for the entire journey including the stop time?",
+      "expected": "Should break down into steps, calculate distances and times, provide final answer"
+    }
+  ]
+}
