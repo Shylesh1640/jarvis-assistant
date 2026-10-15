@@ -26,8 +26,8 @@ from jarvis.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
-# Cache for model clients to avoid redundant initialization
 _model_cache: dict[tuple[str, float, bool, Optional[int]], ChatOllama] = {}
+_MODEL_CACHE_MAX = 20
 
 
 def _runtime_options() -> dict:
@@ -116,7 +116,8 @@ def _build(
 
     try:
         client = ChatOllama(**opts)
-        # Cache the client for reuse
+        if len(_model_cache) >= _MODEL_CACHE_MAX:
+            _model_cache.clear()
         _model_cache[cache_key] = client
         logger.debug("Created and cached new ChatOllama client for %s", model_name)
         return client

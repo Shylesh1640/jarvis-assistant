@@ -57,7 +57,8 @@ def connectors_list(
         create_all()
     except Exception:  # noqa: BLE001
         pass
-    return {"items": list_connectors(), "count": len(list_connectors())}
+    items = list_connectors()
+    return {"items": items, "count": len(items)}
 
 
 @router.get("/{connector_id}")

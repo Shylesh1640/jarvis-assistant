@@ -71,6 +71,7 @@ def session_info(session_id: str) -> dict:
 @router.get("")
 def list_sessions(limit: int = Query(50, ge=1, le=500)) -> dict:
     rows = repos.sessions.list(limit=limit)
+    counts = repos.sessions.message_counts([r.id for r in rows])
     return {
         "sessions": [
             {
@@ -78,7 +79,7 @@ def list_sessions(limit: int = Query(50, ge=1, le=500)) -> dict:
                 "user_id": r.user_id,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
                 "last_active_at": r.last_active_at.isoformat() if r.last_active_at else None,
-                "message_count": repos.sessions.message_count(r.id),
+                "message_count": counts.get(r.id, 0),
             }
             for r in rows
         ]

@@ -4,6 +4,7 @@ FROM python:3.14-slim
 WORKDIR /app
 
 COPY streamlit_app.py .
+COPY .streamlit .streamlit
 
 RUN pip install --no-cache-dir "streamlit>=1.59.1" "httpx>=0.28.1"
 

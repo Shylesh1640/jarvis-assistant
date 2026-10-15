@@ -1,13 +1,13 @@
 [theme]
-# Dark, calm workspace theme for the Jarvis chat UI.
-primaryColor = "#7c5cff"
-backgroundColor = "#0e0e12"
-secondaryBackgroundColor = "#1a1a22"
-textColor = "#e7e7ee"
+primaryColor = "#6C63FF"
+backgroundColor = "#0A0A0F"
+secondaryBackgroundColor = "#111120"
+textColor = "#E8E8F0"
 font = "sans serif"
 
 [server]
 headless = true
+maxUploadSize = 50
 
 [browser]
 gatherUsageStats = false

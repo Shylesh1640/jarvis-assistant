@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request, Response
 
@@ -273,7 +274,7 @@ def auth_2fa_verify_enrollment(
     repos.users.update(
         session_id,
         totp_enabled=True,
-        last_totp_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        last_totp_at=datetime.now(timezone.utc),
     )
 
     return {"verified": True, "message": "2FA enabled successfully."}
@@ -302,15 +303,15 @@ def auth_2fa_disable(
     if not user.password_hash or not verify_password(payload.password, user.password_hash):
         raise APIError(401, "invalid_credentials", "Invalid password.")
 
-    # Verify 2FA code
-    if payload.code:
-        try:
-            secret = decrypt_2fa_secret(user.totp_secret)
-        except Exception as exc:  # noqa: BLE001
-            raise APIError(500, "secret_decrypt_failed", "Failed to decrypt 2FA secret.") from exc
-
-        if not verify_totp(secret, payload.code):
-            raise APIError(400, "invalid_code", "Invalid 2FA code.")
+    # Require 2FA code to disable
+    if not payload.code:
+        raise APIError(400, "code_required", "A valid 2FA code is required to disable 2FA.")
+    try:
+        secret = decrypt_2fa_secret(user.totp_secret)
+    except Exception as exc:  # noqa: BLE001
+        raise APIError(500, "secret_decrypt_failed", "Failed to decrypt 2FA secret.") from exc
+    if not verify_totp(secret, payload.code):
+        raise APIError(400, "invalid_code", "Invalid 2FA code.")
 
     # Disable 2FA
     repos.users.update(
@@ -403,7 +404,7 @@ def auth_2fa_verify_login(
     # Update last TOTP timestamp
     repos.users.update(
         session_id,
-        last_totp_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        last_totp_at=datetime.now(timezone.utc),
     )
 
     # Create full session

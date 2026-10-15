@@ -28,34 +28,34 @@ import streamlit as st
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("streamlit")
 
-# Auto-detect backend URL with fallback
 def _get_backend_url() -> str:
-    """Auto-detect backend URL with Docker and localhost fallback."""
+    """Return the backend URL, cached in session state to avoid repeated probes."""
+    if "backend_url" in st.session_state:
+        return st.session_state.backend_url
+
     env_url = os.environ.get("BACKEND_URL", "").strip()
 
-    # Try environment variable first
     if env_url:
         try:
-            test_url = f"{env_url}/health"
-            response = httpx.get(test_url, timeout=2)
+            response = httpx.get(f"{env_url}/health", timeout=2)
             if response.status_code == 200:
-                logger.info(f"Using backend URL from environment: {env_url}")
+                st.session_state.backend_url = env_url
                 return env_url
         except Exception:
-            logger.warning(f"Backend at {env_url} not reachable, trying localhost...")
+            pass
 
-    # Fallback to localhost
     localhost_url = "http://localhost:8000"
     try:
         response = httpx.get(f"{localhost_url}/health", timeout=2)
         if response.status_code == 200:
-            logger.info(f"Using localhost backend: {localhost_url}")
+            st.session_state.backend_url = localhost_url
             return localhost_url
     except Exception:
         pass
 
-    # Return best guess (will show connection error in UI)
-    return env_url or localhost_url
+    result = env_url or localhost_url
+    st.session_state.backend_url = result
+    return result
 
 BASE_URL = _get_backend_url()
 API_URL = f"{BASE_URL}/chat"
@@ -96,10 +96,12 @@ def _get_session_id() -> str:
 SESSION_ID = _get_session_id()
 
 SUGGESTIONS = {
-    "Explain an idea": "Explain how retrieval-augmented generation works, simply.",
-    "Write some code": "Write a Python function that returns the n-th Fibonacci number.",
-    "Do the math": "Calculate (123 + 456) * 7 and explain the steps.",
-    "Search the code": "Search the workspace for 'TODO' comments.",
+    "Explain RAG": "Explain how retrieval-augmented generation works, simply.",
+    "Write Python": "Write a Python function that returns the n-th Fibonacci number.",
+    "Do math": "Calculate (123 + 456) * 7 and explain the steps.",
+    "Search code": "Search the workspace for 'TODO' comments.",
+    "System design": "Design a URL shortener service with high availability.",
+    "Debug help": "What are common causes of memory leaks in Python web apps?",
 }
 
 ANSWER_STYLES = ["default", "concise", "detailed", "code", "teaching", "architecture", "research"]
@@ -109,6 +111,424 @@ st.set_page_config(
     page_icon=":material/smart_toy:",
     layout="wide",
 )
+
+st.markdown("""
+<style>
+/* ================================================================
+   JARVIS — Professional Dark Theme with Glassmorphism & Animations
+   ================================================================ */
+
+/* ---------- Keyframe animations ---------- */
+
+@keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+@keyframes gradientShift {
+    0%   { background-position: 0% 50%; }
+    50%  { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+}
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.5; }
+}
+@keyframes glowPulse {
+    0%, 100% { box-shadow: 0 0 8px rgba(108, 99, 255, 0.15); }
+    50%      { box-shadow: 0 0 20px rgba(108, 99, 255, 0.35); }
+}
+@keyframes borderGlow {
+    0%, 100% { border-color: rgba(108, 99, 255, 0.25); }
+    50%      { border-color: rgba(108, 99, 255, 0.55); }
+}
+@keyframes float {
+    0%, 100% { transform: translateY(0px); }
+    50%      { transform: translateY(-6px); }
+}
+@keyframes shimmer {
+    0%   { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+}
+@keyframes slideInLeft {
+    from { opacity: 0; transform: translateX(-16px); }
+    to   { opacity: 1; transform: translateX(0); }
+}
+
+/* ---------- Custom scrollbar ---------- */
+
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, #6C63FF55, #4F46E555);
+    border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover { background: #6C63FF99; }
+
+/* ---------- Global overrides ---------- */
+
+.main .block-container {
+    padding-top: 1.5rem !important;
+    padding-bottom: 1rem !important;
+    max-width: 960px;
+}
+html, body, [data-testid="stAppViewContainer"] {
+    scroll-behavior: smooth;
+}
+
+/* ---------- Chat messages ---------- */
+
+.stChatMessage {
+    border-radius: 16px !important;
+    margin-bottom: 6px !important;
+    animation: fadeInUp 0.35s ease-out;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid rgba(255, 255, 255, 0.04) !important;
+}
+[data-testid="stChatMessage"]:hover {
+    border-color: rgba(108, 99, 255, 0.15) !important;
+}
+/* User bubble — subtle warm tint */
+div[data-testid="stChatMessage"]:has(div[data-testid="chatAvatarIcon-user"]) {
+    background: linear-gradient(135deg, rgba(30, 27, 46, 0.7), rgba(25, 23, 38, 0.5)) !important;
+}
+/* Assistant bubble — cool blue tint */
+div[data-testid="stChatMessage"]:has(div[data-testid="chatAvatarIcon-assistant"]) {
+    background: linear-gradient(135deg, rgba(20, 22, 40, 0.7), rgba(15, 18, 35, 0.5)) !important;
+}
+
+/* ---------- Sidebar ---------- */
+
+section[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #0d0d18 0%, #111120 100%) !important;
+    border-right: 1px solid rgba(108, 99, 255, 0.08) !important;
+}
+section[data-testid="stSidebar"] > div:first-child {
+    padding-top: 0.5rem;
+}
+section[data-testid="stSidebar"] h1,
+section[data-testid="stSidebar"] h2,
+section[data-testid="stSidebar"] h3 {
+    font-size: 0.78rem !important;
+    font-weight: 700 !important;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #8B8B9E !important;
+    margin-top: 1.4rem !important;
+    margin-bottom: 0.35rem !important;
+    padding-bottom: 0.3rem;
+    border-bottom: 1px solid rgba(108, 99, 255, 0.08);
+    animation: slideInLeft 0.3s ease-out;
+}
+
+/* ---------- Badges ---------- */
+
+.stBadge span {
+    font-size: 0.7rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.03em;
+    border-radius: 6px !important;
+}
+
+/* ---------- Toggle toolbar ---------- */
+
+div[data-testid="stHorizontalBlock"] > div {
+    padding: 0 0.12rem !important;
+}
+
+/* ---------- Bordered containers (approval card, selection panel) ---------- */
+
+div[data-testid="stVerticalBlockBorderWrapper"]:has(> div > div > div > [data-testid="stMarkdownContainer"]) {
+    border-radius: 14px !important;
+    border-color: rgba(108, 99, 255, 0.2) !important;
+    background: rgba(15, 15, 30, 0.5) !important;
+    backdrop-filter: blur(12px) !important;
+    -webkit-backdrop-filter: blur(12px) !important;
+    animation: glowPulse 3s ease-in-out infinite;
+}
+
+/* ---------- Pills (suggestion chips) ---------- */
+
+button[data-testid="stPill"] {
+    border-radius: 24px !important;
+    font-size: 0.82rem !important;
+    font-weight: 500 !important;
+    letter-spacing: 0.01em;
+    border: 1px solid rgba(108, 99, 255, 0.25) !important;
+    background: rgba(108, 99, 255, 0.06) !important;
+    transition: all 0.25s ease !important;
+}
+button[data-testid="stPill"]:hover {
+    background: rgba(108, 99, 255, 0.18) !important;
+    border-color: rgba(108, 99, 255, 0.5) !important;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(108, 99, 255, 0.2);
+}
+
+/* ---------- Buttons ---------- */
+
+button[kind="primary"] {
+    background: linear-gradient(135deg, #6C63FF, #4F46E5) !important;
+    border: none !important;
+    border-radius: 10px !important;
+    font-weight: 600 !important;
+    transition: all 0.2s ease !important;
+}
+button[kind="primary"]:hover {
+    box-shadow: 0 4px 20px rgba(108, 99, 255, 0.4) !important;
+    transform: translateY(-1px);
+}
+button[kind="secondary"],
+button[data-testid="stBaseButton-secondary"] {
+    border-radius: 10px !important;
+    border-color: rgba(108, 99, 255, 0.2) !important;
+    transition: all 0.2s ease !important;
+}
+button[kind="secondary"]:hover,
+button[data-testid="stBaseButton-secondary"]:hover {
+    border-color: rgba(108, 99, 255, 0.5) !important;
+    background: rgba(108, 99, 255, 0.08) !important;
+}
+
+/* ---------- Code blocks ---------- */
+
+pre {
+    border-radius: 10px !important;
+    border: 1px solid rgba(108, 99, 255, 0.1) !important;
+    background: rgba(8, 8, 18, 0.6) !important;
+}
+
+/* ---------- Expanders ---------- */
+
+details[data-testid="stExpander"] {
+    border-radius: 10px !important;
+    border-color: rgba(108, 99, 255, 0.08) !important;
+    background: rgba(15, 15, 25, 0.3) !important;
+    transition: border-color 0.2s ease;
+}
+details[data-testid="stExpander"]:hover {
+    border-color: rgba(108, 99, 255, 0.2) !important;
+}
+details[data-testid="stExpander"] summary {
+    font-weight: 600 !important;
+    font-size: 0.85rem !important;
+}
+
+/* ---------- Chat input ---------- */
+
+div[data-testid="stChatInput"] {
+    border-radius: 16px !important;
+    animation: fadeIn 0.5s ease-out;
+}
+div[data-testid="stChatInput"] textarea {
+    border-radius: 14px !important;
+    border: 1px solid rgba(108, 99, 255, 0.15) !important;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+}
+div[data-testid="stChatInput"] textarea:focus {
+    border-color: rgba(108, 99, 255, 0.45) !important;
+    box-shadow: 0 0 12px rgba(108, 99, 255, 0.15) !important;
+}
+
+/* ---------- Metrics ---------- */
+
+div[data-testid="stMetric"] {
+    background: rgba(108, 99, 255, 0.05);
+    border: 1px solid rgba(108, 99, 255, 0.1);
+    border-radius: 12px;
+    padding: 0.75rem !important;
+}
+
+/* ---------- Spinner override ---------- */
+
+.stSpinner > div {
+    border-top-color: #6C63FF !important;
+}
+
+/* ---------- Toasts ---------- */
+
+div[data-testid="stToast"] {
+    border-radius: 12px !important;
+    backdrop-filter: blur(16px) !important;
+}
+
+/* ---------- Progress bars ---------- */
+
+div[data-testid="stProgress"] > div > div {
+    background: linear-gradient(90deg, #6C63FF, #8B5CF6, #6C63FF) !important;
+    background-size: 200% 100%;
+    animation: shimmer 2s linear infinite;
+    border-radius: 8px !important;
+}
+
+/* ---------- Dividers ---------- */
+
+hr {
+    border-color: rgba(108, 99, 255, 0.08) !important;
+    margin: 0.5rem 0 !important;
+}
+
+/* ---------- Toggle toolbar ---------- */
+
+div[data-testid="stHorizontalBlock"] label span {
+    font-size: 0.82rem !important;
+}
+
+/* ---------- Selection (text highlight color) ---------- */
+
+::selection {
+    background: rgba(108, 99, 255, 0.35);
+    color: #fff;
+}
+
+/* ---------- File uploader ---------- */
+
+section[data-testid="stFileUploader"] {
+    border-radius: 12px !important;
+}
+
+/* ---------- Selectbox / Dropdown ---------- */
+
+div[data-testid="stSelectbox"] > div {
+    border-radius: 10px !important;
+}
+
+/* ---------- Hero / welcome section ---------- */
+
+.jarvis-hero {
+    text-align: center;
+    padding: 3rem 1rem 1.5rem;
+    animation: fadeIn 0.8s ease-out;
+}
+.jarvis-hero-icon {
+    font-size: 3.5rem;
+    animation: float 4s ease-in-out infinite;
+    display: inline-block;
+    margin-bottom: 0.8rem;
+}
+.jarvis-hero h2 {
+    font-size: 1.6rem !important;
+    font-weight: 700 !important;
+    background: linear-gradient(135deg, #E8E8F0, #6C63FF, #8B5CF6, #E8E8F0);
+    background-size: 300% 300%;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    animation: gradientShift 6s ease infinite;
+    margin: 0 0 0.3rem 0 !important;
+    line-height: 1.3;
+}
+.jarvis-hero p {
+    color: #8B8B9E;
+    font-size: 0.95rem;
+    margin: 0;
+    max-width: 420px;
+    margin-left: auto;
+    margin-right: auto;
+}
+.jarvis-hero-divider {
+    width: 60px;
+    height: 3px;
+    background: linear-gradient(90deg, transparent, #6C63FF, transparent);
+    margin: 1.2rem auto;
+    border-radius: 2px;
+}
+.jarvis-suggest-label {
+    color: #6B6B80;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-weight: 600;
+    margin-bottom: 0.6rem;
+}
+
+/* ---------- Sidebar brand ---------- */
+
+.sidebar-brand {
+    text-align: center;
+    padding: 0.6rem 0 0.8rem;
+    animation: fadeIn 0.6s ease-out;
+}
+.sidebar-brand-icon {
+    font-size: 2rem;
+    display: inline-block;
+    animation: float 5s ease-in-out infinite;
+}
+.sidebar-brand h3 {
+    font-size: 1.05rem !important;
+    font-weight: 700 !important;
+    letter-spacing: 0.04em !important;
+    text-transform: uppercase !important;
+    color: #E8E8F0 !important;
+    margin: 0.3rem 0 0.1rem !important;
+    border-bottom: none !important;
+    background: linear-gradient(135deg, #E8E8F0, #6C63FF);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+.sidebar-brand p {
+    color: #6B6B80;
+    font-size: 0.72rem;
+    margin: 0;
+    letter-spacing: 0.04em;
+}
+.sidebar-brand-divider {
+    width: 40px;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, #6C63FF, transparent);
+    margin: 0.7rem auto 0;
+    border-radius: 2px;
+}
+
+/* ---------- Status dot (pulse) ---------- */
+
+.status-dot {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    margin-right: 6px;
+    position: relative;
+    top: -1px;
+}
+.status-dot.online {
+    background: #22c55e;
+    box-shadow: 0 0 6px #22c55e88;
+    animation: pulse 2s ease-in-out infinite;
+}
+.status-dot.offline {
+    background: #ef4444;
+    box-shadow: 0 0 6px #ef444488;
+}
+
+/* ---------- Conversation header ---------- */
+
+.chat-header {
+    animation: fadeInUp 0.4s ease-out;
+    padding-bottom: 0.3rem;
+}
+.chat-header h1 {
+    font-size: 1.35rem !important;
+    font-weight: 700 !important;
+    background: linear-gradient(135deg, #E8E8F0, #A5A0FF);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 0.1rem !important;
+}
+.chat-header p {
+    color: #6B6B80;
+    font-size: 0.8rem;
+    margin: 0;
+}
+
+</style>
+""", unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +599,7 @@ def fetch_trace_panel() -> list[dict] | None:
     try:
         r = httpx.get(TRACES_URL, timeout=5)
         r.raise_for_status()
-        return r.json()
+        return r.json().get("traces", [])
     except Exception:  # noqa: BLE001
         return None
 
@@ -567,7 +987,7 @@ def _render_assistant_meta(rec: dict, *, debug: bool) -> None:
         strategy = rec.get("reasoning_strategy") or "unknown"
         st.caption(f":material/psychology: Deep thinking ({strategy}, {steps} steps)")
 
-    reasoning_chain = rec.get("_reasoning_chain")
+    reasoning_chain = rec.get("reasoning_chain") or rec.get("_reasoning_chain")
     if reasoning_chain:
         with st.expander("Reasoning chain", icon=":material/account_tree:"):
             for step in reasoning_chain:
@@ -971,28 +1391,33 @@ def _render_approval_card() -> None:
 # ---------------------------------------------------------------------------
 
 with st.sidebar:
-    st.header("Jarvis Assistant")
-    st.caption("Local-first hybrid AI assistant")
+    st.markdown("""
+    <div class="sidebar-brand">
+        <div class="sidebar-brand-icon">&#129302;</div>
+        <h3>Jarvis Assistant</h3>
+        <p>Local-first hybrid AI &middot; Ollama</p>
+        <div class="sidebar-brand-divider"></div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    # Connection status section
     col1, col2 = st.columns([4, 1])
     with col1:
-        st.caption(f"**Backend:** `{BASE_URL}`")
+        st.caption(f"`{BASE_URL}`")
     with col2:
-        if st.button("🔄", help="Refresh connection status"):
+        if st.button(":material/refresh:", help="Refresh connection status"):
+            st.session_state.pop("backend_url", None)
             st.cache_data.clear()
             st.rerun()
 
     health = fetch_health()
     if health and health.get("status") == "ok":
-        st.badge("Backend online", icon=":material/check_circle:", color="green")
+        st.markdown('<span class="status-dot online"></span> **Backend online**', unsafe_allow_html=True)
 
-        # Show Ollama status
         if health.get("ollama_reachable"):
-            st.badge("Ollama connected", icon=":material/check_circle:", color="green")
+            st.markdown('<span class="status-dot online"></span> **Ollama connected**', unsafe_allow_html=True)
         else:
-            st.badge("Ollama offline", icon=":material/error:", color="red")
-            with st.expander("⚠️ Ollama Issue - Click to fix", expanded=False):
+            st.markdown('<span class="status-dot offline"></span> **Ollama offline**', unsafe_allow_html=True)
+            with st.expander("Ollama troubleshooting", expanded=False, icon=":material/warning:"):
                 st.error("Ollama is not reachable from the backend.")
                 st.markdown("""
 **If using Docker:**
@@ -1017,9 +1442,9 @@ ollama serve
 ```
 """)
     else:
-        st.badge("Backend offline", icon=":material/error:", color="red")
+        st.markdown('<span class="status-dot offline"></span> **Backend offline**', unsafe_allow_html=True)
 
-        with st.expander("❌ Backend Connection Failed - Click to fix", expanded=True):
+        with st.expander("Backend Connection Failed", expanded=True, icon=":material/error:"):
             st.error(f"Cannot connect to backend at: `{BASE_URL}`")
             st.markdown("""
 **If using Docker:**
@@ -1067,6 +1492,7 @@ netstat -an | findstr "8000"
             )
             if st.button("Update & Reconnect"):
                 os.environ["BACKEND_URL"] = new_url
+                st.session_state.pop("backend_url", None)
                 st.cache_data.clear()
                 st.rerun()
 
@@ -1295,7 +1721,7 @@ netstat -an | findstr "8000"
             r = httpx.get(ab_url, timeout=10)
             if r.status_code == 200:
                 ab_data = r.json()
-                tests = ab_data.get("tests", [])
+                tests = ab_data.get("active_tests", [])
                 if tests:
                     for test in tests:
                         name = test.get("name", "unnamed")
@@ -1309,44 +1735,49 @@ netstat -an | findstr "8000"
         except Exception:
             st.caption("Could not load A/B test data.")
 
-    with st.expander("Tips", icon=":material/lightbulb:"):
+    with st.expander("Tips & shortcuts", icon=":material/lightbulb:"):
         st.markdown(
-            "- Ask coding questions to route to the strong local coder.\n"
-            "- Long or architecture-style prompts route to the cloud chain.\n"
-            "- Select part of a reply, paste it below the reply, then ask about it.\n"
-            "- Risky tool calls pause and ask for approval — in background tasks too.\n"
-            "- Toggle 'Run as background task' for very long prompts; the task card\n"
-            "  updates live and can be approved, denied, or cancelled from it.\n"
-            "- The trace debug panel in the sidebar shows the last request pipeline."
+            "- **Coding** questions auto-route to the coding model.\n"
+            "- **Complex** / architecture prompts route to the cloud chain.\n"
+            "- **Select text** from a reply, paste below, and ask about it.\n"
+            "- **Risky tools** pause for your approval before running.\n"
+            "- **Background mode** runs heavy prompts as async tasks.\n"
+            "- **Traces panel** above shows the full request pipeline."
         )
 
-    if st.button("Clear conversation", icon=":material/delete:"):
-        st.session_state.messages = []
-        _clear_pending_approval()
-        st.session_state.pending_selection = ""
-        st.session_state.selection_target_index = None
-        st.session_state.active_task_id = None
-        st.rerun()
-
-    if st.session_state.messages:
-        md = export_conversation_to_markdown(st.session_state.messages)
-        if st.download_button(
-            "Export conversation (.md)",
-            data=md.encode("utf-8"),
-            file_name="jarvis_conversation.md",
-            mime="text/markdown",
-            icon=":material/download:",
-        ):
-            st.toast("Conversation exported.", icon=":material/download:")
+    st.divider()
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Clear chat", icon=":material/delete:", use_container_width=True):
+            st.session_state.messages = []
+            _clear_pending_approval()
+            st.session_state.pending_selection = ""
+            st.session_state.selection_target_index = None
+            st.session_state.active_task_id = None
+            st.rerun()
+    with c2:
+        if st.session_state.messages:
+            md = export_conversation_to_markdown(st.session_state.messages)
+            if st.download_button(
+                "Export",
+                data=md.encode("utf-8"),
+                file_name="jarvis_conversation.md",
+                mime="text/markdown",
+                icon=":material/download:",
+                use_container_width=True,
+            ):
+                st.toast("Conversation exported.", icon=":material/download:")
 
 # ---------------------------------------------------------------------------
 # Conversation header + toggle toolbar
 # ---------------------------------------------------------------------------
 
-st.title("Chat with Jarvis")
-st.caption(
-    "General, coding, and complex tasks — routed to the right model automatically."
-)
+st.markdown("""
+<div class="chat-header">
+    <h1>Chat with Jarvis</h1>
+    <p>General, coding, and complex tasks &mdash; routed to the right model automatically.</p>
+</div>
+""", unsafe_allow_html=True)
 
 tg = st.session_state.toggles
 with st.container(horizontal=True):
@@ -1404,8 +1835,16 @@ with st.container(horizontal=True):
         on_change=lambda: tg.update({"answer_style": st.session_state.sel_style}),
     )
 
-# Suggestions on an empty conversation (pills vanish once a message lands).
 if not st.session_state.messages:
+    st.markdown("""
+<div class="jarvis-hero">
+    <div class="jarvis-hero-icon">&#129302;</div>
+    <h2>What can I help you with?</h2>
+    <p>Ask anything &mdash; I route your question to the best model for the job.</p>
+    <div class="jarvis-hero-divider"></div>
+    <div class="jarvis-suggest-label">Quick start</div>
+</div>
+""", unsafe_allow_html=True)
     selected = st.pills(
         "Try asking",
         list(SUGGESTIONS.keys()),
@@ -1503,7 +1942,7 @@ pending_hint = (
     if st.session_state.pending_selection
     else "Ask Jarvis something..."
 )
-user_input = st.chat_input(pending_hint, submit_mode="disable")
+user_input = st.chat_input(pending_hint)
 
 if user_input:
     selection = st.session_state.pending_selection

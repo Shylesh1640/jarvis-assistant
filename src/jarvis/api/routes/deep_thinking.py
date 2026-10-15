@@ -7,6 +7,7 @@ from fastapi import APIRouter
 
 from jarvis.api.errors import APIError
 from jarvis.config.settings import settings
+from jarvis.security.session_auth import ensure_session_context
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +28,13 @@ def get_deep_thinking_settings() -> dict:
 
 
 @router.patch("/deep-thinking")
-def update_deep_thinking_settings(payload: dict) -> dict:
+def update_deep_thinking_settings(
+    payload: dict,
+    session_id: str | None = None,
+    session_token: str | None = None,
+) -> dict:
     """Update deep thinking settings (runtime only, not persisted to .env)."""
-    # Note: These are runtime-only changes. To persist, update .env and restart.
+    ensure_session_context(session_id or "default", session_token)
     updated = {}
     
     if "enabled" in payload:
@@ -91,8 +96,13 @@ def get_reasoning_strategy_settings() -> dict:
 
 
 @router.patch("/reasoning-strategies")
-def update_reasoning_strategy_settings(payload: dict) -> dict:
+def update_reasoning_strategy_settings(
+    payload: dict,
+    session_id: str | None = None,
+    session_token: str | None = None,
+) -> dict:
     """Update reasoning strategy settings (runtime only, not persisted to .env)."""
+    ensure_session_context(session_id or "default", session_token)
     updated = {}
     
     if "default" in payload:

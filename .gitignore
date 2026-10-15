@@ -2,9 +2,16 @@
 __pycache__/
 *.pyc
 .env
+.env.local
 data/
 workspace/
 backups/
 *.log
 .pytest_cache/
+.ruff_cache/
 env/
+*.egg-info/
+dist/
+build/
+.coverage
+htmlcov/

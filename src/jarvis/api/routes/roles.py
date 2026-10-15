@@ -39,7 +39,7 @@ def _ensure_db() -> None:
         logger.debug("create_all failed in roles route: %s", exc)
 
 
-def _role_to_response(role: repos.roles.get.__self__.__class__) -> RoleResponse:
+def _role_to_response(role) -> RoleResponse:
     return RoleResponse(
         role_id=role.role_id,
         role_name=role.role_name,
@@ -50,10 +50,15 @@ def _role_to_response(role: repos.roles.get.__self__.__class__) -> RoleResponse:
 
 
 @router.post("")
-def role_create(payload: RoleCreate) -> RoleResponse:
+def role_create(
+    payload: RoleCreate,
+    session_id: str | None = None,
+    session_token: str | None = None,
+) -> RoleResponse:
     """Create a new role (admin only)."""
     _require_user_management()
     _ensure_db()
+    ensure_session_context(session_id or "default", session_token)
 
     if repos.roles.get(payload.role_id):
         raise APIError(409, "role_exists", f"Role '{payload.role_id}' already exists.")

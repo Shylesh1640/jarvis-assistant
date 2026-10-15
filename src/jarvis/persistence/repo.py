@@ -30,6 +30,9 @@ from jarvis.persistence.models import (
 from jarvis.security.token_hasher import new_session_token, verify_token
 
 
+_SENTINEL = object()
+
+
 class SessionRepo:
     def get_or_create(self, session_id: str, *, user_id: str | None = None) -> SessionRow:
         from datetime import datetime, timezone
@@ -229,6 +232,19 @@ class SessionRepo:
                 .select_from(MessageRow)
                 .where(MessageRow.session_id == session_id)
             ) or 0
+
+    def message_counts(self, session_ids: list[str]) -> dict[str, int]:
+        """Batch message counts for multiple sessions (avoids N+1)."""
+        if not session_ids:
+            return {}
+        with get_session() as s:
+            rows = s.execute(
+                select(MessageRow.session_id, func.count())
+                .where(MessageRow.session_id.in_(session_ids))
+                .group_by(MessageRow.session_id)
+            ).all()
+            counts = {sid: cnt for sid, cnt in rows}
+            return {sid: counts.get(sid, 0) for sid in session_ids}
 
     def purge_inactive(self, ttl_days: int, now=None) -> int:
         """Delete sessions with no activity in the last *ttl_days* days.
@@ -1260,6 +1276,10 @@ class UserRepo:
         password_hash: str | None = None,
         role_id: str | None = None,
         is_active: bool | None = None,
+        totp_enabled: bool | None = None,
+        totp_secret: str | None = _SENTINEL,
+        recovery_codes: list | None = _SENTINEL,
+        last_totp_at=_SENTINEL,
     ) -> UserRow | None:
         with get_session() as s:
             row = s.get(UserRow, user_id)
@@ -1275,6 +1295,14 @@ class UserRepo:
                 row.role_id = role_id
             if is_active is not None:
                 row.is_active = is_active
+            if totp_enabled is not None:
+                row.totp_enabled = totp_enabled
+            if totp_secret is not _SENTINEL:
+                row.totp_secret = totp_secret
+            if recovery_codes is not _SENTINEL:
+                row.recovery_codes = recovery_codes if recovery_codes else []
+            if last_totp_at is not _SENTINEL:
+                row.last_totp_at = last_totp_at
             row.updated_at = datetime.now(timezone.utc)
             s.flush()
             return row

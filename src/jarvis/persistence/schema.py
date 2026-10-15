@@ -24,7 +24,7 @@ from sqlalchemy.engine import Engine
 logger = logging.getLogger("jarvis.persistence.schema")
 
 SCHEMA_VERSION_TABLE = "schema_version"
-LATEST_SCHEMA_VERSION = 3
+LATEST_SCHEMA_VERSION = 4
 
 # Additive migration for the `sessions` table (Phase 6 token security). Moved
 # here from ``engine.ensure_schema`` so it is tracked by the versioning.
@@ -121,10 +121,48 @@ def _migration_v3(engine: Engine) -> None:
         logger.info("Schema migration v3: added %s to tasks", ", ".join(added))
 
 
+_V4_SESSION_COLUMNS: dict[str, dict[str, str]] = {
+    "token": {"sqlite": "VARCHAR(64)", "postgresql": "VARCHAR(64)"},
+    "last_active_at": {"sqlite": "DATETIME", "postgresql": "TIMESTAMP"},
+}
+
+_V4_TASK_COLUMNS: dict[str, dict[str, str]] = {
+    "approval_id": {"sqlite": "VARCHAR(64)", "postgresql": "VARCHAR(64)"},
+    "pending_action": {"sqlite": "TEXT", "postgresql": "TEXT"},
+    "pending_tool_calls": {"sqlite": "JSON", "postgresql": "JSONB"},
+}
+
+
+def _migration_v4(engine: Engine) -> None:
+    """Add missing columns to sessions (token, last_active_at) and tasks
+    (approval_id, pending_action, pending_tool_calls)."""
+    insp = inspect(engine)
+    dialect = engine.dialect.name
+
+    if "sessions" in insp.get_table_names():
+        existing = {c["name"] for c in insp.get_columns("sessions")}
+        for col, types in _V4_SESSION_COLUMNS.items():
+            if col not in existing:
+                ddl_type = types.get(dialect) or types["sqlite"]
+                with engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE sessions ADD COLUMN {col} {ddl_type} NULL"))
+                logger.info("Schema migration v4: added %s to sessions", col)
+
+    if "tasks" in insp.get_table_names():
+        existing = {c["name"] for c in insp.get_columns("tasks")}
+        for col, types in _V4_TASK_COLUMNS.items():
+            if col not in existing:
+                ddl_type = types.get(dialect) or types["sqlite"]
+                with engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE tasks ADD COLUMN {col} {ddl_type} NULL"))
+                logger.info("Schema migration v4: added %s to tasks", col)
+
+
 MIGRATIONS: dict[int, Callable[[Engine], None]] = {
     1: _migration_v1,
     2: _migration_v2,
     3: _migration_v3,
+    4: _migration_v4,
 }
 
 

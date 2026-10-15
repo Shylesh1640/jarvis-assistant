@@ -62,6 +62,28 @@ _approvals_lock = threading.Lock()  # Protect _pending_approvals dict
 _SESSION_CACHE_MAX_SIZE = 1000  # Maximum sessions to keep in memory
 _SESSION_MAX_HISTORY = 100  # Maximum messages per session in memory cache
 
+_ollama_check_cache: tuple[bool, str | None] | None = None
+_ollama_check_time: float = 0.0
+_OLLAMA_CHECK_TTL = 30.0  # cache Ollama health for 30s
+
+
+def _cached_ollama_check() -> tuple[bool, str | None]:
+    global _ollama_check_cache, _ollama_check_time
+    now = time.monotonic()
+    if _ollama_check_cache is not None and now - _ollama_check_time < _OLLAMA_CHECK_TTL:
+        return _ollama_check_cache
+    from jarvis.models.ollama_connection import check_ollama_available
+    result = check_ollama_available()
+    _ollama_check_cache = result
+    _ollama_check_time = now
+    return result
+
+
+_last_purge_time: float = 0.0
+_last_cleanup_time: float = 0.0
+_PURGE_INTERVAL = 60.0  # seconds between approval purges
+_CLEANUP_INTERVAL = 30.0  # seconds between session cache cleanups
+
 
 def _thread_id(session_id: str) -> str:
     """Stable LangGraph thread id per session so the checkpointer can group runs.
@@ -124,11 +146,9 @@ def _cleanup_session_cache() -> None:
                     _SESSION_MAX_HISTORY,
                 )
 
-    # Clean up stale pending approvals (older than 1 hour)
-    import time
     from datetime import datetime, timezone
 
-    stale_threshold = time.time() - 3600  # 1 hour ago
+    stale_threshold = time.time() - 3600
     stale_approvals = []
 
     with _approvals_lock:
@@ -365,10 +385,9 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
         return _build_response(payload.session_id, result)
 
     # --- Normal request ---
-    # Pre-flight check: Ensure Ollama is available before processing
     from jarvis.models.ollama_connection import check_ollama_available
 
-    is_ollama_ok, ollama_error = check_ollama_available()
+    is_ollama_ok, ollama_error = _cached_ollama_check()
     if not is_ollama_ok:
         trace_event(tr, "error", category="ollama_unavailable_preflight")
         finish_trace(tr)
@@ -398,8 +417,14 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
     # (they may survive only in the DB after a restart).
     _cancel_durable_approval(payload.session_id)
 
-    _purge_expired_approvals()
-    _cleanup_session_cache()  # Prevent memory leaks
+    global _last_purge_time, _last_cleanup_time
+    now = time.monotonic()
+    if now - _last_purge_time > _PURGE_INTERVAL:
+        _purge_expired_approvals()
+        _last_purge_time = now
+    if now - _last_cleanup_time > _CLEANUP_INTERVAL:
+        _cleanup_session_cache()
+        _last_cleanup_time = now
     history = _get_history(payload.session_id, payload.history)
 
     selected_text = (payload.selected_text or "").strip()

@@ -131,7 +131,7 @@ def _init_default_roles() -> None:
         )
 
 
-def _user_to_response(user: repos.users.get.__self__.__class__) -> UserResponse:
+def _user_to_response(user) -> UserResponse:
     return UserResponse(
         user_id=user.user_id,
         email=user.email,
@@ -145,18 +145,19 @@ def _user_to_response(user: repos.users.get.__self__.__class__) -> UserResponse:
 
 
 @router.post("")
-def user_create(payload: UserCreate) -> UserResponse:
-    """Create a new user (admin only when user management is enabled)."""
+def user_create(
+    payload: UserCreate,
+    session_id: str | None = None,
+    session_token: str | None = None,
+) -> UserResponse:
+    """Create a new user (first user bootstraps, others require admin)."""
     _require_user_management()
     _ensure_db()
 
-    # For now, require admin token via header or create first user
-    # In a real deployment, this would check for admin auth
-    # For now, allow creation if no users exist (bootstrap)
     existing_users = repos.users.list(limit=1)
     if existing_users:
-        # Would check for admin auth here
-        pass
+        ensure_session_context(session_id or "default", session_token)
+        _require_admin(session_id or "default")
 
     if payload.email and repos.users.get_by_email(payload.email):
         raise APIError(409, "email_exists", "A user with this email already exists.")
@@ -270,8 +271,9 @@ def user_delete(
     """Delete a user (admin only)."""
     _require_user_management()
     _ensure_db()
+    ensure_session_context(session_id or "default", session_token)
+    _require_admin(session_id or "default")
 
-    # In a real implementation, check for admin auth
     if not repos.users.delete(user_id):
         raise APIError(404, "user_not_found", "User not found.")
 
@@ -287,6 +289,8 @@ def user_deactivate(
     """Deactivate a user (admin only)."""
     _require_user_management()
     _ensure_db()
+    ensure_session_context(session_id or "default", session_token)
+    _require_admin(session_id or "default")
 
     if not repos.users.deactivate(user_id):
         raise APIError(404, "user_not_found", "User not found.")
@@ -303,6 +307,8 @@ def user_activate(
     """Activate a user (admin only)."""
     _require_user_management()
     _ensure_db()
+    ensure_session_context(session_id or "default", session_token)
+    _require_admin(session_id or "default")
 
     if not repos.users.activate(user_id):
         raise APIError(404, "user_not_found", "User not found.")

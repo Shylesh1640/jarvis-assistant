@@ -53,15 +53,22 @@ def _patch_chat_ollama(monkeypatch):
     """Replace ChatOllama with _FakeChatOllama for every test."""
     _FakeChatOllama.instances.clear()
     import langchain_ollama
-
-    monkeypatch.setattr(langchain_ollama, "ChatOllama", _FakeChatOllama)
-    # `from langchain_ollama import ChatOllama` in ollama_client.py binds the
-    # name at import time in that module's namespace, so patch there too.
     import jarvis.models.ollama_client as oc
 
+    oc._model_cache.clear()
+
+    monkeypatch.setattr(langchain_ollama, "ChatOllama", _FakeChatOllama)
     monkeypatch.setattr(oc, "ChatOllama", _FakeChatOllama)
+    monkeypatch.setattr(
+        "jarvis.models.ollama_connection.check_ollama_available",
+        lambda: (True, None),
+    )
+    from jarvis.models.ollama_connection import get_connection_manager
+    get_connection_manager().invalidate_cache()
     yield
     _FakeChatOllama.instances.clear()
+    oc._model_cache.clear()
+    get_connection_manager().invalidate_cache()
 
 
 @pytest.fixture(autouse=True)

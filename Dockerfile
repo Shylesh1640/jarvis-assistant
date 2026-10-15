@@ -7,6 +7,8 @@ WORKDIR /app
 
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
+COPY config ./config
+COPY .streamlit .streamlit
 COPY streamlit_app.py .
 
 RUN uv sync --frozen --no-dev

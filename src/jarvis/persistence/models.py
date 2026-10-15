@@ -323,8 +323,4 @@ class RoleRow(Base):
         back_populates="role", cascade="all, delete-orphan"
     )
 
-# Add role relationship to UserRow
-UserRow.role = relationship("RoleRow", back_populates="users", foreign_keys=[UserRow.role_id])
 
-# Add user relationship to SessionRow
-SessionRow.user = relationship("UserRow", back_populates="sessions", foreign_keys=[SessionRow.user_id])

@@ -1,0 +1,157 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg-primary: #0a0a0f;
+  --color-bg-secondary: #111120;
+  --color-bg-tertiary: #161628;
+  --color-bg-card: #13132a;
+  --color-accent: #6c63ff;
+  --color-accent-light: #8b5cf6;
+  --color-accent-dim: rgba(108, 99, 255, 0.15);
+  --color-text-primary: #e8e8f0;
+  --color-text-secondary: #8b8b9e;
+  --color-text-muted: #6b6b80;
+  --color-success: #22c55e;
+  --color-error: #ef4444;
+  --color-warning: #f59e0b;
+  --color-border: rgba(108, 99, 255, 0.1);
+  --color-border-hover: rgba(108, 99, 255, 0.3);
+  --color-glass: rgba(15, 15, 30, 0.6);
+}
+
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #6c63ff55, #4f46e555);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover { background: #6c63ff99; }
+
+::selection {
+  background: rgba(108, 99, 255, 0.35);
+  color: #fff;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  scroll-behavior: smooth;
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-8px); }
+}
+@keyframes gradientShift {
+  0%   { background-position: 0% 50%; }
+  50%  { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes glow {
+  0%, 100% { box-shadow: 0 0 8px rgba(108, 99, 255, 0.15); }
+  50%      { box-shadow: 0 0 24px rgba(108, 99, 255, 0.35); }
+}
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(-12px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes typing-bounce {
+  0%, 80%, 100% { transform: translateY(0); }
+  40% { transform: translateY(-6px); }
+}
+
+.animate-fadeInUp { animation: fadeInUp 0.4s ease-out both; }
+.animate-fadeIn   { animation: fadeIn 0.5s ease-out both; }
+.animate-float    { animation: float 4s ease-in-out infinite; }
+.animate-glow     { animation: glow 3s ease-in-out infinite; }
+.animate-slideIn  { animation: slideIn 0.3s ease-out both; }
+.animate-shimmer  {
+  background: linear-gradient(90deg, #6c63ff, #8b5cf6, #6c63ff);
+  background-size: 200% 100%;
+  animation: shimmer 2s linear infinite;
+}
+
+.gradient-text {
+  background: linear-gradient(135deg, #e8e8f0, #6c63ff, #8b5cf6, #e8e8f0);
+  background-size: 300% 300%;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  animation: gradientShift 6s ease infinite;
+}
+
+.glass {
+  background: var(--color-glass);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--color-border);
+}
+
+.glass-hover:hover {
+  border-color: var(--color-border-hover);
+}
+
+.markdown-body h1, .markdown-body h2, .markdown-body h3 {
+  color: var(--color-text-primary);
+  margin-top: 1em;
+  margin-bottom: 0.5em;
+  font-weight: 600;
+}
+.markdown-body h1 { font-size: 1.4em; }
+.markdown-body h2 { font-size: 1.2em; }
+.markdown-body h3 { font-size: 1.05em; }
+.markdown-body p { margin: 0.4em 0; line-height: 1.7; }
+.markdown-body code {
+  background: rgba(108, 99, 255, 0.1);
+  border: 1px solid rgba(108, 99, 255, 0.15);
+  border-radius: 4px;
+  padding: 0.15em 0.4em;
+  font-size: 0.88em;
+  font-family: 'Fira Code', 'Cascadia Code', monospace;
+}
+.markdown-body pre {
+  background: rgba(8, 8, 18, 0.8) !important;
+  border: 1px solid rgba(108, 99, 255, 0.12);
+  border-radius: 10px;
+  padding: 1em;
+  overflow-x: auto;
+  margin: 0.6em 0;
+}
+.markdown-body pre code {
+  background: none;
+  border: none;
+  padding: 0;
+}
+.markdown-body ul, .markdown-body ol {
+  padding-left: 1.5em;
+  margin: 0.4em 0;
+}
+.markdown-body li { margin: 0.2em 0; line-height: 1.6; }
+.markdown-body blockquote {
+  border-left: 3px solid var(--color-accent);
+  padding-left: 1em;
+  margin: 0.5em 0;
+  color: var(--color-text-secondary);
+}
+.markdown-body a { color: var(--color-accent-light); text-decoration: none; }
+.markdown-body a:hover { text-decoration: underline; }
+.markdown-body strong { color: var(--color-text-primary); font-weight: 600; }
